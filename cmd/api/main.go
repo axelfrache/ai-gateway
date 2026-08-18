@@ -50,7 +50,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:         cfg.ServerAddr,
-		Handler:      httpapi.NewServer(aiService, logr).Routes(),
+		Handler:      httpapi.NewServer(aiService, logr, cfg.GatewayAPIKeys).Routes(),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: cfg.RequestTimeout + 5*time.Second,
 		IdleTimeout:  60 * time.Second,

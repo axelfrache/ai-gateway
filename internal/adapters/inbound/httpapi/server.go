@@ -2,10 +2,12 @@ package httpapi
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/frachea/ai-gateway/internal/application"
@@ -15,19 +17,21 @@ import (
 type Server struct {
 	service *application.AIService
 	logger  *slog.Logger
+	apiKeys []string
 }
 
-func NewServer(service *application.AIService, logger *slog.Logger) *Server {
+func NewServer(service *application.AIService, logger *slog.Logger, apiKeys []string) *Server {
 	return &Server{
 		service: service,
 		logger:  logger,
+		apiKeys: compactStrings(apiKeys),
 	}
 }
 
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
-	mux.HandleFunc("POST /v1/generate", s.generate)
+	mux.Handle("POST /v1/generate", s.requireAuth(http.HandlerFunc(s.generate)))
 	return requestLogger(s.logger, mux)
 }
 
@@ -99,6 +103,54 @@ func writeError(w http.ResponseWriter, statusCode int, message string, attempts 
 		"error":    message,
 		"attempts": attempts,
 	})
+}
+
+func (s *Server) requireAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.authorized(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		writeError(w, http.StatusUnauthorized, "unauthorized", nil)
+	})
+}
+
+func (s *Server) authorized(r *http.Request) bool {
+	token := bearerToken(r.Header.Get("Authorization"))
+	if token == "" {
+		token = strings.TrimSpace(r.Header.Get("X-API-Key"))
+	}
+	if token == "" {
+		return false
+	}
+
+	for _, apiKey := range s.apiKeys {
+		if subtle.ConstantTimeCompare([]byte(token), []byte(apiKey)) == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func bearerToken(value string) string {
+	const prefix = "Bearer "
+	if !strings.HasPrefix(value, prefix) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(value, prefix))
+}
+
+func compactStrings(values []string) []string {
+	compacted := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			compacted = append(compacted, value)
+		}
+	}
+	return compacted
 }
 
 func requestLogger(logger *slog.Logger, next http.Handler) http.Handler {

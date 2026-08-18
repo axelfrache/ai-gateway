@@ -28,6 +28,7 @@ var defaultModelFallbacks = []string{
 
 type Config struct {
 	ServerAddr     string
+	GatewayAPIKeys []string
 	GeminiAPIKey   string
 	GeminiBaseURL  string
 	GroqAPIKey     string
@@ -46,6 +47,7 @@ func FromEnv() (Config, error) {
 
 	cfg := Config{
 		ServerAddr:     stringFromEnv("SERVER_ADDR", ":8080"),
+		GatewayAPIKeys: csvFromEnv("GATEWAY_API_KEYS", nil),
 		GeminiAPIKey:   os.Getenv("GEMINI_API_KEY"),
 		GeminiBaseURL:  strings.TrimRight(stringFromEnv("GEMINI_API_BASE_URL", defaultGeminiAPIBaseURL), "/"),
 		GroqAPIKey:     os.Getenv("GROQ_API_KEY"),
@@ -58,6 +60,9 @@ func FromEnv() (Config, error) {
 
 	if cfg.GeminiAPIKey == "" && cfg.GroqAPIKey == "" && cfg.MistralAPIKey == "" {
 		return Config{}, errors.New("at least one provider API key is required")
+	}
+	if len(cfg.GatewayAPIKeys) == 0 {
+		return Config{}, errors.New("GATEWAY_API_KEYS is required")
 	}
 
 	return cfg, nil

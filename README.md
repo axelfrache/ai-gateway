@@ -42,6 +42,7 @@ It is designed for structured JSON responses, free-tier-friendly routing, and a 
 - Go 1.26
 - Docker and Docker Compose
 - At least one provider key: `GEMINI_API_KEY`, `GROQ_API_KEY`, or `MISTRAL_API_KEY`
+- At least one gateway key in `GATEWAY_API_KEYS`
 
 ## Running
 
@@ -74,6 +75,7 @@ docker compose down
 ```bash
 curl -s http://localhost:8080/v1/generate \
   -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer change-me' \
   -d '{
     "prompt": "Explain the repository pattern in Go in 5 lines.",
     "system": "Answer in English.",
@@ -99,6 +101,7 @@ curl -s http://localhost:8080/v1/generate \
 | `MISTRAL_API_KEY` | Mistral API key |
 | `SERVER_ADDR` | HTTP listen address |
 | `REQUEST_TIMEOUT_SECONDS` | Timeout per model attempt |
+| `GATEWAY_API_KEYS` | Comma-separated API keys allowed to call protected endpoints |
 | `MODEL_FALLBACKS` | Ordered fallback chain using `provider:model` |
 
 ## Code Quality

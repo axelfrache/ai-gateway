@@ -18,7 +18,7 @@ func TestGenerateEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := NewServer(service, slog.New(slog.DiscardHandler)).Routes()
+	server := NewServer(service, slog.New(slog.DiscardHandler), []string{"test-key"}).Routes()
 
 	body, err := json.Marshal(map[string]any{
 		"prompt": "hello",
@@ -28,6 +28,7 @@ func TestGenerateEndpoint(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/generate", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
 	rec := httptest.NewRecorder()
 
 	server.ServeHTTP(rec, req)
@@ -45,6 +46,55 @@ func TestGenerateEndpoint(t *testing.T) {
 	}
 	if result.Text != "ok" {
 		t.Fatalf("expected text ok, got %q", result.Text)
+	}
+}
+
+func TestGenerateEndpointRequiresAPIKey(t *testing.T) {
+	service, err := application.NewAIService(fakeProvider{}, []string{"gemini-3.7-flash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(service, slog.New(slog.DiscardHandler), []string{"test-key"}).Routes()
+
+	body, err := json.Marshal(map[string]any{
+		"prompt": "hello",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/generate", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGenerateEndpointAcceptsXAPIKey(t *testing.T) {
+	service, err := application.NewAIService(fakeProvider{}, []string{"gemini-3.7-flash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(service, slog.New(slog.DiscardHandler), []string{"test-key"}).Routes()
+
+	body, err := json.Marshal(map[string]any{
+		"prompt": "hello",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/generate", bytes.NewReader(body))
+	req.Header.Set("X-API-Key", "test-key")
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
