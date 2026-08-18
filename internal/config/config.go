@@ -1,0 +1,104 @@
+package config
+
+import (
+	"errors"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+)
+
+const defaultGeminiAPIBaseURL = "https://generativelanguage.googleapis.com/v1beta"
+const defaultGroqAPIBaseURL = "https://api.groq.com/openai/v1"
+const defaultMistralAPIBaseURL = "https://api.mistral.ai/v1"
+
+var defaultModelFallbacks = []string{
+	"gemini:gemini-3.6-flash",
+	"gemini:gemini-3.5-flash",
+	"gemini:gemma-4-31b-it",
+	"gemini:gemma-4-26b-a4b-it",
+	"gemini:gemini-3.5-flash-lite",
+	"gemini:gemini-3.1-flash-lite",
+	"groq:openai/gpt-oss-120b",
+	"groq:openai/gpt-oss-20b",
+	"mistral:mistral-small-latest",
+	"mistral:ministral-8b-latest",
+	"mistral:ministral-3b-latest",
+}
+
+type Config struct {
+	ServerAddr     string
+	GeminiAPIKey   string
+	GeminiBaseURL  string
+	GroqAPIKey     string
+	GroqBaseURL    string
+	MistralAPIKey  string
+	MistralBaseURL string
+	ModelFallbacks []string
+	RequestTimeout time.Duration
+}
+
+func FromEnv() (Config, error) {
+	timeoutSeconds, err := intFromEnv("REQUEST_TIMEOUT_SECONDS", 45)
+	if err != nil {
+		return Config{}, err
+	}
+
+	cfg := Config{
+		ServerAddr:     stringFromEnv("SERVER_ADDR", ":8080"),
+		GeminiAPIKey:   os.Getenv("GEMINI_API_KEY"),
+		GeminiBaseURL:  strings.TrimRight(stringFromEnv("GEMINI_API_BASE_URL", defaultGeminiAPIBaseURL), "/"),
+		GroqAPIKey:     os.Getenv("GROQ_API_KEY"),
+		GroqBaseURL:    strings.TrimRight(stringFromEnv("GROQ_API_BASE_URL", defaultGroqAPIBaseURL), "/"),
+		MistralAPIKey:  os.Getenv("MISTRAL_API_KEY"),
+		MistralBaseURL: strings.TrimRight(stringFromEnv("MISTRAL_API_BASE_URL", defaultMistralAPIBaseURL), "/"),
+		ModelFallbacks: csvFromEnv("MODEL_FALLBACKS", csvFromEnv("GEMINI_MODEL_FALLBACKS", defaultModelFallbacks)),
+		RequestTimeout: time.Duration(timeoutSeconds) * time.Second,
+	}
+
+	if cfg.GeminiAPIKey == "" && cfg.GroqAPIKey == "" && cfg.MistralAPIKey == "" {
+		return Config{}, errors.New("at least one provider API key is required")
+	}
+
+	return cfg, nil
+}
+
+func stringFromEnv(key, fallback string) string {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func intFromEnv(key string, fallback int) (int, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, err
+	}
+	return parsed, nil
+}
+
+func csvFromEnv(key string, fallback []string) []string {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return append([]string(nil), fallback...)
+	}
+
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			result = append(result, part)
+		}
+	}
+	if len(result) == 0 {
+		return append([]string(nil), fallback...)
+	}
+	return result
+}
