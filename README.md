@@ -64,6 +64,8 @@ Then go to:
 - Health check: http://localhost:8080/healthz
 - Generate API: http://localhost:8080/v1/generate
 - Models API: http://localhost:8080/v1/models
+- Ollama-compatible generate API: http://localhost:8080/api/generate
+- Ollama-compatible models API: http://localhost:8080/api/tags
 
 To stop:
 
@@ -120,6 +122,37 @@ curl -s http://localhost:8080/v1/models/check \
   -H 'Authorization: Bearer change-me' \
   -d '{"models":["gemini:gemini-3.6-flash"]}'
 ```
+
+## Ollama-Compatible API
+
+AI Gateway also exposes a small Ollama-compatible surface for apps that expect Ollama-style endpoints.
+
+List configured models without probing providers:
+
+```bash
+curl -s http://localhost:8080/api/tags \
+  -H 'Authorization: Bearer change-me'
+```
+
+Generate a non-streaming response:
+
+```bash
+curl -s http://localhost:8080/api/generate \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer change-me' \
+  -d '{
+    "model": "gemini:gemini-3.6-flash",
+    "prompt": "Return a JSON object with a short greeting.",
+    "stream": false,
+    "format": "json",
+    "options": {
+      "temperature": 0.2,
+      "num_predict": 128
+    }
+  }'
+```
+
+`format` accepts `"json"` or a JSON Schema object. `stream: true` is rejected because AI Gateway currently returns one completed response per request.
 
 ## Configuration
 

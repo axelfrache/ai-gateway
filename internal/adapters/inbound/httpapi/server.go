@@ -32,6 +32,8 @@ func NewServer(service *application.AIService, logger *slog.Logger, apiKeys []st
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
+	mux.Handle("GET /api/tags", s.requireAuth(http.HandlerFunc(s.ollamaTags)))
+	mux.Handle("POST /api/generate", s.requireAuth(http.HandlerFunc(s.ollamaGenerate)))
 	mux.Handle("GET /v1/models", s.requireAuth(http.HandlerFunc(s.models)))
 	mux.Handle("POST /v1/models/check", s.requireAuth(http.HandlerFunc(s.checkModels)))
 	mux.Handle("POST /v1/generate", s.requireAuth(http.HandlerFunc(s.generate)))
@@ -91,6 +93,84 @@ func (s *Server) checkModels(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) ollamaTags(w http.ResponseWriter, _ *http.Request) {
+	models := s.service.Models()
+	items := make([]ollamaModel, 0, len(models))
+	modifiedAt := time.Now().UTC()
+
+	for _, model := range models {
+		family := model.Provider
+		if family == "" {
+			family = "unknown"
+		}
+
+		items = append(items, ollamaModel{
+			Name:       model.Name,
+			Model:      model.Name,
+			ModifiedAt: modifiedAt,
+			Details: ollamaModelDetails{
+				Format: "remote",
+				Family: family,
+				Families: []string{
+					family,
+				},
+				ParameterSize:     "",
+				QuantizationLevel: "",
+			},
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"models": items,
+	})
+}
+
+func (s *Server) ollamaGenerate(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+
+	var payload ollamaGenerateRequest
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body", nil)
+		return
+	}
+
+	if payload.Stream != nil && *payload.Stream {
+		writeError(w, http.StatusBadRequest, "streaming is not supported", nil)
+		return
+	}
+
+	responseSchema, err := ollamaFormatToSchema(payload.Format)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), nil)
+		return
+	}
+
+	start := time.Now()
+	result, err := s.service.Generate(r.Context(), domain.GenerateRequest{
+		Prompt:          payload.Prompt,
+		System:          payload.System,
+		Model:           payload.Model,
+		Models:          payload.Models,
+		Temperature:     payload.Options.Temperature,
+		MaxOutputTokens: payload.Options.NumPredict,
+		ResponseSchema:  responseSchema,
+	})
+	if err != nil {
+		statusCode := statusCodeFor(err)
+		writeError(w, statusCode, err.Error(), result.Attempts)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, ollamaGenerateResponse{
+		Model:         result.Model,
+		CreatedAt:     time.Now().UTC(),
+		Response:      result.Text,
+		Done:          true,
+		DoneReason:    "stop",
+		TotalDuration: time.Since(start).Nanoseconds(),
+	})
+}
+
 type generateRequest struct {
 	Prompt          string          `json:"prompt"`
 	System          string          `json:"system,omitempty"`
@@ -103,6 +183,73 @@ type generateRequest struct {
 
 type checkModelsRequest struct {
 	Models []string `json:"models,omitempty"`
+}
+
+type ollamaGenerateRequest struct {
+	Model   string          `json:"model,omitempty"`
+	Models  []string        `json:"models,omitempty"`
+	Prompt  string          `json:"prompt"`
+	System  string          `json:"system,omitempty"`
+	Stream  *bool           `json:"stream,omitempty"`
+	Format  json.RawMessage `json:"format,omitempty"`
+	Options ollamaOptions   `json:"options,omitempty"`
+}
+
+type ollamaOptions struct {
+	Temperature *float64 `json:"temperature,omitempty"`
+	NumPredict  *int     `json:"num_predict,omitempty"`
+}
+
+type ollamaGenerateResponse struct {
+	Model         string    `json:"model"`
+	CreatedAt     time.Time `json:"created_at"`
+	Response      string    `json:"response"`
+	Done          bool      `json:"done"`
+	DoneReason    string    `json:"done_reason,omitempty"`
+	TotalDuration int64     `json:"total_duration"`
+}
+
+type ollamaModel struct {
+	Name       string             `json:"name"`
+	Model      string             `json:"model"`
+	ModifiedAt time.Time          `json:"modified_at"`
+	Size       int64              `json:"size"`
+	Digest     string             `json:"digest"`
+	Details    ollamaModelDetails `json:"details"`
+}
+
+type ollamaModelDetails struct {
+	Format            string   `json:"format"`
+	Family            string   `json:"family"`
+	Families          []string `json:"families"`
+	ParameterSize     string   `json:"parameter_size"`
+	QuantizationLevel string   `json:"quantization_level"`
+}
+
+func ollamaFormatToSchema(format json.RawMessage) (json.RawMessage, error) {
+	if len(format) == 0 {
+		return nil, nil
+	}
+
+	var value any
+	if err := json.Unmarshal(format, &value); err != nil {
+		return nil, errors.New("format must be json or a JSON schema object")
+	}
+
+	switch typed := value.(type) {
+	case string:
+		if typed != "json" {
+			return nil, errors.New("format must be json or a JSON schema object")
+		}
+		return json.RawMessage(`{"type":"object"}`), nil
+	case map[string]any:
+		if len(typed) == 0 {
+			return nil, errors.New("format must be json or a JSON schema object")
+		}
+		return format, nil
+	default:
+		return nil, errors.New("format must be json or a JSON schema object")
+	}
 }
 
 func statusCodeFor(err error) int {
