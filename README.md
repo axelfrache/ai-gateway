@@ -63,6 +63,7 @@ Then go to:
 
 - Health check: http://localhost:8080/healthz
 - Generate API: http://localhost:8080/v1/generate
+- Models API: http://localhost:8080/v1/models
 
 To stop:
 
@@ -79,6 +80,7 @@ curl -s http://localhost:8080/v1/generate \
   -d '{
     "prompt": "Explain the repository pattern in Go in 5 lines.",
     "system": "Answer in English.",
+    "model": "gemini:gemini-3.6-flash",
     "temperature": 0.4,
     "max_output_tokens": 512,
     "response_schema": {
@@ -90,6 +92,33 @@ curl -s http://localhost:8080/v1/generate \
       "additionalProperties": false
     }
   }'
+```
+
+Use `model` to force a single model, or `models` to provide a request-specific fallback chain:
+
+```json
+{
+  "models": [
+    "gemini:gemini-3.6-flash",
+    "groq:openai/gpt-oss-20b"
+  ]
+}
+```
+
+List configured models:
+
+```bash
+curl -s http://localhost:8080/v1/models \
+  -H 'Authorization: Bearer change-me'
+```
+
+Probe model availability:
+
+```bash
+curl -s http://localhost:8080/v1/models/check \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer change-me' \
+  -d '{"models":["gemini:gemini-3.6-flash"]}'
 ```
 
 ## Configuration

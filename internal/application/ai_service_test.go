@@ -91,6 +91,64 @@ func TestGenerateStopsOnNonRetryableError(t *testing.T) {
 	}
 }
 
+func TestGenerateUsesRequestedModel(t *testing.T) {
+	provider := fakeProvider{
+		responses: map[string]domain.GenerateResponse{
+			"groq:openai/gpt-oss-20b": {Model: "groq:openai/gpt-oss-20b", Text: "ok"},
+		},
+	}
+	service, err := NewAIService(provider, []string{"gemini:gemini-3.6-flash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.Generate(context.Background(), domain.GenerateRequest{
+		Prompt: "hello",
+		Model:  "groq:openai/gpt-oss-20b",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Model != "groq:openai/gpt-oss-20b" {
+		t.Fatalf("expected requested model, got %q", result.Model)
+	}
+}
+
+func TestGenerateRejectsModelAndModelsTogether(t *testing.T) {
+	service, err := NewAIService(fakeProvider{}, []string{"gemini:gemini-3.6-flash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = service.Generate(context.Background(), domain.GenerateRequest{
+		Prompt: "hello",
+		Model:  "gemini:gemini-3.6-flash",
+		Models: []string{"groq:openai/gpt-oss-20b"},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if domain.Kind(err) != domain.ErrorKindInvalidRequest {
+		t.Fatalf("expected invalid request error, got %q", domain.Kind(err))
+	}
+}
+
+func TestModelsReturnsConfiguredModels(t *testing.T) {
+	service, err := NewAIService(fakeProvider{}, []string{"gemini:gemini-3.6-flash", "groq:openai/gpt-oss-20b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	models := service.Models()
+	if len(models) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(models))
+	}
+	if models[0].Provider != "gemini" || models[0].Model != "gemini-3.6-flash" || models[0].Order != 1 {
+		t.Fatalf("unexpected first model: %#v", models[0])
+	}
+}
+
 func TestGenerateRequiresPrompt(t *testing.T) {
 	service, err := NewAIService(fakeProvider{}, []string{"gemini-3.7-flash"})
 	if err != nil {

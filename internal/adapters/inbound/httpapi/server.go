@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -31,6 +32,8 @@ func NewServer(service *application.AIService, logger *slog.Logger, apiKeys []st
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
+	mux.Handle("GET /v1/models", s.requireAuth(http.HandlerFunc(s.models)))
+	mux.Handle("POST /v1/models/check", s.requireAuth(http.HandlerFunc(s.checkModels)))
 	mux.Handle("POST /v1/generate", s.requireAuth(http.HandlerFunc(s.generate)))
 	return requestLogger(s.logger, mux)
 }
@@ -51,6 +54,8 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
 	result, err := s.service.Generate(r.Context(), domain.GenerateRequest{
 		Prompt:          payload.Prompt,
 		System:          payload.System,
+		Model:           payload.Model,
+		Models:          payload.Models,
 		Temperature:     payload.Temperature,
 		MaxOutputTokens: payload.MaxOutputTokens,
 		ResponseSchema:  payload.ResponseSchema,
@@ -64,12 +69,40 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (s *Server) models(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"models": s.service.Models(),
+	})
+}
+
+func (s *Server) checkModels(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+
+	var payload checkModelsRequest
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "invalid JSON body", nil)
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"models": s.service.CheckModels(r.Context(), payload.Models),
+	})
+}
+
 type generateRequest struct {
 	Prompt          string          `json:"prompt"`
 	System          string          `json:"system,omitempty"`
+	Model           string          `json:"model,omitempty"`
+	Models          []string        `json:"models,omitempty"`
 	Temperature     *float64        `json:"temperature,omitempty"`
 	MaxOutputTokens *int            `json:"max_output_tokens,omitempty"`
 	ResponseSchema  json.RawMessage `json:"response_schema,omitempty"`
+}
+
+type checkModelsRequest struct {
+	Models []string `json:"models,omitempty"`
 }
 
 func statusCodeFor(err error) int {

@@ -10,6 +10,8 @@ import (
 type GenerateRequest struct {
 	Prompt          string
 	System          string
+	Model           string
+	Models          []string
 	Temperature     *float64
 	MaxOutputTokens *int
 	ResponseSchema  json.RawMessage
@@ -32,6 +34,22 @@ type GenerateResult struct {
 	Text         string    `json:"text"`
 	FallbackUsed bool      `json:"fallback_used"`
 	Attempts     []Attempt `json:"attempts"`
+}
+
+type ModelInfo struct {
+	Name     string `json:"name"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	Order    int    `json:"order"`
+}
+
+type ModelCheck struct {
+	Name          string `json:"name"`
+	Provider      string `json:"provider"`
+	Model         string `json:"model"`
+	Status        string `json:"status"`
+	Error         string `json:"error,omitempty"`
+	LatencyMillis int64  `json:"latency_ms"`
 }
 
 type AIProvider interface {
