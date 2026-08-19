@@ -453,7 +453,7 @@ func contentsFromMessages(messages []domain.ChatMessage) ([]content, string, err
 				return nil, "", err
 			}
 			contents = append(contents, content{
-				Role: "function",
+				Role: "user",
 				Parts: []part{
 					{FunctionResponse: &functionResponse{Name: name, Response: response}},
 				},

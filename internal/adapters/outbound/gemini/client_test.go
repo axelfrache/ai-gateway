@@ -85,7 +85,7 @@ func TestContentsFromMessagesMapsToolResults(t *testing.T) {
 		t.Fatalf("expected 3 contents, got %d", len(contents))
 	}
 	last := contents[2]
-	if last.Role != "function" || len(last.Parts) != 1 || last.Parts[0].FunctionResponse == nil {
+	if last.Role != "user" || len(last.Parts) != 1 || last.Parts[0].FunctionResponse == nil {
 		t.Fatalf("unexpected tool result content: %#v", last)
 	}
 	if last.Parts[0].FunctionResponse.Name != "get_status" {
