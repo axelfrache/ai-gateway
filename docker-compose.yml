@@ -1,7 +1,21 @@
 services:
+  mcp-smoke:
+    build:
+      context: .
+      args:
+        APP: mcp-smoke
+    image: ai-gateway-mcp-smoke:local
+    ports:
+      - "${MCP_SMOKE_HOST_PORT:-8090}:8090"
+    environment:
+      MCP_SMOKE_ADDR: ":8090"
+    restart: unless-stopped
+
   ai-gateway:
     build:
       context: .
+      args:
+        APP: api
     image: ai-gateway:local
     env_file:
       - path: .env
@@ -12,4 +26,11 @@ services:
       - "${HOST_PORT:-8080}:8080"
     environment:
       SERVER_ADDR: ":8080"
+      MCP_SERVERS: "${MCP_SERVERS:-smoke=http://mcp-smoke:8090/mcp}"
+      MCP_ALLOWED_TOOLS: "${MCP_ALLOWED_TOOLS:-smoke__status,smoke__echo}"
+      MCP_DENIED_TOOLS: "${MCP_DENIED_TOOLS:-}"
+      MCP_MAX_TOOL_ROUNDS: "${MCP_MAX_TOOL_ROUNDS:-4}"
+      MCP_TOOL_TIMEOUT_SECONDS: "${MCP_TOOL_TIMEOUT_SECONDS:-20}"
+    depends_on:
+      - mcp-smoke
     restart: unless-stopped

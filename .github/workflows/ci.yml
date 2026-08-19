@@ -32,8 +32,10 @@ jobs:
             command: test -z "$(gofmt -l .)"
           - check: test
             command: go test ./...
-          - check: build
+          - check: build-api
             command: go build -v -o /tmp/ai-gateway ./cmd/api
+          - check: build-mcp-smoke
+            command: go build -v -o /tmp/ai-gateway-mcp-smoke ./cmd/mcp-smoke
 
     steps:
       - name: Checkout
@@ -48,9 +50,17 @@ jobs:
         run: ${{ matrix.command }}
 
   images:
-    name: Image / app
+    name: Image / ${{ matrix.image.name }}
     needs: checks
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - name: ai-gateway
+            app: api
+          - name: ai-gateway-mcp-smoke
+            app: mcp-smoke
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -70,7 +80,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/ai-gateway
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image.name }}
           flavor: |
             latest=${{ github.ref == 'refs/heads/main' }}
           tags: |
@@ -85,7 +95,9 @@ jobs:
         with:
           context: .
           push: ${{ github.event_name != 'pull_request' }}
+          build-args: |
+            APP=${{ matrix.image.app }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=app
-          cache-to: type=gha,mode=max,scope=app
+          cache-from: type=gha,scope=${{ matrix.image.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}

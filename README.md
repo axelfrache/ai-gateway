@@ -63,6 +63,8 @@ When `MCP_SERVERS` is configured, AI Gateway lists tools from each MCP server, i
 
 MCP tools are exposed as `server__tool_name`. For example, a Kubernetes MCP server named `kube` with a `get-pods` tool becomes `kube__get_pods`.
 
+The repository includes a small MCP smoke server for protocol testing. It exposes `smoke__status` and `smoke__echo`, has no side effects, and is enabled by default in Docker Compose.
+
 ```env
 MCP_SERVERS=kube=http://kube-mcp.ai.svc.cluster.local/mcp
 MCP_BEARER_TOKENS=kube=optional-token
@@ -101,6 +103,7 @@ docker compose up -d --build
 Then go to:
 
 - Health check: http://localhost:8080/healthz
+- MCP smoke health check: http://localhost:8090/healthz
 - Generate API: http://localhost:8080/v1/generate
 - Models API: http://localhost:8080/v1/models
 - OpenAI-compatible chat API: http://localhost:8080/v1/chat/completions
@@ -111,6 +114,22 @@ To stop:
 
 ```bash
 docker compose down
+```
+
+Test MCP tool execution with a low token budget:
+
+```bash
+curl -s http://localhost:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer change-me' \
+  -d '{
+    "model": "gemini:gemini-3.5-flash-lite",
+    "messages": [
+      { "role": "user", "content": "Call smoke__status and answer in one short sentence." }
+    ],
+    "tool_choice": "required",
+    "max_tokens": 128
+  }'
 ```
 
 ## API
@@ -233,6 +252,7 @@ curl -s http://localhost:8080/api/generate \
 | `SERVER_ADDR` | HTTP listen address |
 | `REQUEST_TIMEOUT_SECONDS` | Timeout per model attempt |
 | `GATEWAY_API_KEYS` | Comma-separated API keys allowed to call protected endpoints |
+| `MCP_SMOKE_HOST_PORT` | Host port used by the Docker Compose MCP smoke server |
 | `MODEL_FALLBACKS` | Ordered fallback chain using `provider:model` |
 | `TOOL_MODEL_FALLBACKS` | Ordered fallback chain for chat completion requests that include tools |
 | `MCP_SERVERS` | Comma-separated MCP servers using `name=url`; empty disables gateway-side MCP tools |
