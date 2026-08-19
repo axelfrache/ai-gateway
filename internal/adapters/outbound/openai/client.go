@@ -19,6 +19,7 @@ type Client struct {
 	apiKey         string
 	baseURL        string
 	maxTokensField string
+	openRouter     bool
 	httpClient     *http.Client
 }
 
@@ -35,6 +36,12 @@ func NewClient(name, apiKey, baseURL, maxTokensField string, timeout time.Durati
 			Timeout: timeout,
 		},
 	}
+}
+
+func NewOpenRouterClient(apiKey, baseURL string, timeout time.Duration) *Client {
+	client := NewClient("OpenRouter", apiKey, baseURL, "max_tokens", timeout)
+	client.openRouter = true
+	return client
 }
 
 func (c *Client) Generate(ctx context.Context, model string, req domain.GenerateRequest) (domain.GenerateResponse, error) {
@@ -65,6 +72,11 @@ func (c *Client) Generate(ctx context.Context, model string, req domain.Generate
 				"strict": true,
 				"schema": json.RawMessage(req.ResponseSchema),
 			},
+		}
+		if c.openRouter {
+			payload["provider"] = map[string]any{
+				"require_parameters": true,
+			}
 		}
 	}
 

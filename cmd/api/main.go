@@ -40,6 +40,9 @@ func main() {
 	if cfg.MistralAPIKey != "" {
 		providers["mistral"] = openai.NewClient("Mistral", cfg.MistralAPIKey, cfg.MistralBaseURL, "max_tokens", cfg.RequestTimeout)
 	}
+	if cfg.OpenRouterAPIKey != "" {
+		providers["openrouter"] = openai.NewOpenRouterClient(cfg.OpenRouterAPIKey, cfg.OpenRouterBaseURL, cfg.RequestTimeout)
+	}
 
 	modelFallbacks := configuredFallbacks(cfg.ModelFallbacks, providers)
 	aiRouter := router.New(defaultProvider(providers), providers)
@@ -98,7 +101,7 @@ func providerName(candidate string) string {
 }
 
 func defaultProvider(providers map[string]domain.AIProvider) string {
-	for _, name := range []string{"gemini", "groq", "mistral"} {
+	for _, name := range []string{"gemini", "groq", "mistral", "openrouter"} {
 		if providers[name] != nil {
 			return name
 		}

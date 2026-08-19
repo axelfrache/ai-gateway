@@ -11,6 +11,7 @@ import (
 const defaultGeminiAPIBaseURL = "https://generativelanguage.googleapis.com/v1beta"
 const defaultGroqAPIBaseURL = "https://api.groq.com/openai/v1"
 const defaultMistralAPIBaseURL = "https://api.mistral.ai/v1"
+const defaultOpenRouterAPIBaseURL = "https://openrouter.ai/api/v1"
 
 var defaultModelFallbacks = []string{
 	"gemini:gemini-3.6-flash",
@@ -24,19 +25,22 @@ var defaultModelFallbacks = []string{
 	"mistral:mistral-small-latest",
 	"mistral:ministral-8b-latest",
 	"mistral:ministral-3b-latest",
+	"openrouter:openrouter/free",
 }
 
 type Config struct {
-	ServerAddr     string
-	GatewayAPIKeys []string
-	GeminiAPIKey   string
-	GeminiBaseURL  string
-	GroqAPIKey     string
-	GroqBaseURL    string
-	MistralAPIKey  string
-	MistralBaseURL string
-	ModelFallbacks []string
-	RequestTimeout time.Duration
+	ServerAddr        string
+	GatewayAPIKeys    []string
+	GeminiAPIKey      string
+	GeminiBaseURL     string
+	GroqAPIKey        string
+	GroqBaseURL       string
+	MistralAPIKey     string
+	MistralBaseURL    string
+	OpenRouterAPIKey  string
+	OpenRouterBaseURL string
+	ModelFallbacks    []string
+	RequestTimeout    time.Duration
 }
 
 func FromEnv() (Config, error) {
@@ -46,19 +50,24 @@ func FromEnv() (Config, error) {
 	}
 
 	cfg := Config{
-		ServerAddr:     stringFromEnv("SERVER_ADDR", ":8080"),
-		GatewayAPIKeys: csvFromEnv("GATEWAY_API_KEYS", nil),
-		GeminiAPIKey:   os.Getenv("GEMINI_API_KEY"),
-		GeminiBaseURL:  strings.TrimRight(stringFromEnv("GEMINI_API_BASE_URL", defaultGeminiAPIBaseURL), "/"),
-		GroqAPIKey:     os.Getenv("GROQ_API_KEY"),
-		GroqBaseURL:    strings.TrimRight(stringFromEnv("GROQ_API_BASE_URL", defaultGroqAPIBaseURL), "/"),
-		MistralAPIKey:  os.Getenv("MISTRAL_API_KEY"),
-		MistralBaseURL: strings.TrimRight(stringFromEnv("MISTRAL_API_BASE_URL", defaultMistralAPIBaseURL), "/"),
+		ServerAddr:       stringFromEnv("SERVER_ADDR", ":8080"),
+		GatewayAPIKeys:   csvFromEnv("GATEWAY_API_KEYS", csvFromEnv("GATEWAY_API_KEY", nil)),
+		GeminiAPIKey:     os.Getenv("GEMINI_API_KEY"),
+		GeminiBaseURL:    strings.TrimRight(stringFromEnv("GEMINI_API_BASE_URL", defaultGeminiAPIBaseURL), "/"),
+		GroqAPIKey:       os.Getenv("GROQ_API_KEY"),
+		GroqBaseURL:      strings.TrimRight(stringFromEnv("GROQ_API_BASE_URL", defaultGroqAPIBaseURL), "/"),
+		MistralAPIKey:    os.Getenv("MISTRAL_API_KEY"),
+		MistralBaseURL:   strings.TrimRight(stringFromEnv("MISTRAL_API_BASE_URL", defaultMistralAPIBaseURL), "/"),
+		OpenRouterAPIKey: os.Getenv("OPENROUTER_API_KEY"),
+		OpenRouterBaseURL: strings.TrimRight(
+			stringFromEnv("OPENROUTER_API_BASE_URL", defaultOpenRouterAPIBaseURL),
+			"/",
+		),
 		ModelFallbacks: csvFromEnv("MODEL_FALLBACKS", csvFromEnv("GEMINI_MODEL_FALLBACKS", defaultModelFallbacks)),
 		RequestTimeout: time.Duration(timeoutSeconds) * time.Second,
 	}
 
-	if cfg.GeminiAPIKey == "" && cfg.GroqAPIKey == "" && cfg.MistralAPIKey == "" {
+	if cfg.GeminiAPIKey == "" && cfg.GroqAPIKey == "" && cfg.MistralAPIKey == "" && cfg.OpenRouterAPIKey == "" {
 		return Config{}, errors.New("at least one provider API key is required")
 	}
 	if len(cfg.GatewayAPIKeys) == 0 {

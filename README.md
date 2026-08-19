@@ -7,6 +7,7 @@
 [![Gemini](https://img.shields.io/badge/Gemini-API-4285F4?logo=google&logoColor=white)](https://ai.google.dev/)
 [![Groq](https://img.shields.io/badge/Groq-API-F55036)](https://groq.com/)
 [![Mistral](https://img.shields.io/badge/Mistral-API-FA520F)](https://mistral.ai/)
+[![OpenRouter](https://img.shields.io/badge/OpenRouter-API-111111)](https://openrouter.ai/)
 
 ## Description
 
@@ -23,7 +24,7 @@ It is designed for structured JSON responses, free-tier-friendly routing, and a 
 | `internal/application` | Generation orchestration and fallback |
 | `internal/adapters/inbound/httpapi` | REST API |
 | `internal/adapters/outbound/gemini` | Gemini adapter |
-| `internal/adapters/outbound/openai` | OpenAI-compatible adapter for Groq and Mistral |
+| `internal/adapters/outbound/openai` | OpenAI-compatible adapter for Groq, Mistral, and OpenRouter |
 | `internal/adapters/outbound/router` | `provider:model` routing |
 | `internal/config` | Environment loading and configuration |
 
@@ -34,6 +35,7 @@ It is designed for structured JSON responses, free-tier-friendly routing, and a 
 | Gemini | `gemini-3.6-flash`, `gemini-3.5-flash`, `gemma-4-31b-it`, `gemma-4-26b-a4b-it`, `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite` |
 | Groq | `openai/gpt-oss-120b`, `openai/gpt-oss-20b` |
 | Mistral | `mistral-small-latest`, `mistral-medium-latest`, `mistral-large-latest`, `ministral-8b-latest`, `ministral-3b-latest` |
+| OpenRouter | `openrouter/free` |
 
 ## Getting Started
 
@@ -41,7 +43,7 @@ It is designed for structured JSON responses, free-tier-friendly routing, and a 
 
 - Go 1.26
 - Docker and Docker Compose
-- At least one provider key: `GEMINI_API_KEY`, `GROQ_API_KEY`, or `MISTRAL_API_KEY`
+- At least one provider key: `GEMINI_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`, or `OPENROUTER_API_KEY`
 - At least one gateway key in `GATEWAY_API_KEYS`
 
 ## Running
@@ -161,6 +163,7 @@ curl -s http://localhost:8080/api/generate \
 | `GEMINI_API_KEY` | Google Gemini API key |
 | `GROQ_API_KEY` | Groq API key |
 | `MISTRAL_API_KEY` | Mistral API key |
+| `OPENROUTER_API_KEY` | OpenRouter API key |
 | `SERVER_ADDR` | HTTP listen address |
 | `REQUEST_TIMEOUT_SECONDS` | Timeout per model attempt |
 | `GATEWAY_API_KEYS` | Comma-separated API keys allowed to call protected endpoints |
