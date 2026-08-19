@@ -45,8 +45,9 @@ func main() {
 	}
 
 	modelFallbacks := configuredFallbacks(cfg.ModelFallbacks, providers)
+	toolModelFallbacks := configuredFallbacks(cfg.ToolModelFallbacks, providers)
 	aiRouter := router.New(defaultProvider(providers), providers)
-	aiService, err := application.NewAIService(aiRouter, modelFallbacks)
+	aiService, err := application.NewAIService(aiRouter, modelFallbacks, toolModelFallbacks)
 	if err != nil {
 		log.Fatalf("create AI service: %v", err)
 	}
@@ -63,7 +64,7 @@ func main() {
 	defer stop()
 
 	go func() {
-		logr.Info("starting API", "addr", cfg.ServerAddr, "models", modelFallbacks)
+		logr.Info("starting API", "addr", cfg.ServerAddr, "models", modelFallbacks, "tool_models", toolModelFallbacks)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("serve: %v", err)
 		}

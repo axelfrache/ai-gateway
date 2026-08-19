@@ -199,17 +199,6 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if rawJSONHasValue(payload.ToolChoice) && !rawJSONEqualsString(payload.ToolChoice, "none") && !rawJSONEqualsString(payload.ToolChoice, "auto") {
-		writeError(w, http.StatusBadRequest, "tools are not supported", nil)
-		return
-	}
-
-	system, prompt, err := chatMessagesToPrompt(payload.Messages)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error(), nil)
-		return
-	}
-
 	responseSchema, err := openAIResponseFormatToSchema(payload.ResponseFormat)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error(), nil)
@@ -221,13 +210,15 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		maxOutputTokens = payload.MaxCompletionTokens
 	}
 
-	result, err := s.service.Generate(r.Context(), domain.GenerateRequest{
-		Prompt:          prompt,
-		System:          system,
+	result, err := s.service.Chat(r.Context(), domain.ChatRequest{
+		Messages:        domainMessages(payload.Messages),
 		Model:           payload.Model,
+		Models:          payload.Models,
 		Temperature:     payload.Temperature,
 		MaxOutputTokens: maxOutputTokens,
 		ResponseSchema:  responseSchema,
+		Tools:           payload.Tools,
+		ToolChoice:      payload.ToolChoice,
 	})
 	if err != nil {
 		statusCode := statusCodeFor(err)
@@ -266,6 +257,7 @@ type openAIModel struct {
 
 type chatCompletionRequest struct {
 	Model               string          `json:"model,omitempty"`
+	Models              []string        `json:"models,omitempty"`
 	Messages            []chatMessage   `json:"messages"`
 	Temperature         *float64        `json:"temperature,omitempty"`
 	MaxTokens           *int            `json:"max_tokens,omitempty"`
@@ -277,8 +269,11 @@ type chatCompletionRequest struct {
 }
 
 type chatMessage struct {
-	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"`
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+	Name       string          `json:"name,omitempty"`
+	ToolCalls  json.RawMessage `json:"tool_calls,omitempty"`
 }
 
 type chatCompletionResponse struct {
@@ -298,13 +293,15 @@ type chatCompletionChoice struct {
 }
 
 type chatCompletionMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role      string          `json:"role"`
+	Content   any             `json:"content"`
+	ToolCalls json.RawMessage `json:"tool_calls,omitempty"`
 }
 
 type chatCompletionDelta struct {
-	Role    string `json:"role,omitempty"`
-	Content string `json:"content,omitempty"`
+	Role      string          `json:"role,omitempty"`
+	Content   any             `json:"content,omitempty"`
+	ToolCalls json.RawMessage `json:"tool_calls,omitempty"`
 }
 
 type chatCompletionUsage struct {
@@ -380,72 +377,6 @@ func ollamaFormatToSchema(format json.RawMessage) (json.RawMessage, error) {
 	}
 }
 
-func chatMessagesToPrompt(messages []chatMessage) (string, string, error) {
-	if len(messages) == 0 {
-		return "", "", errors.New("messages is required")
-	}
-
-	systemParts := []string{}
-	promptParts := []string{}
-	for _, message := range messages {
-		role := strings.TrimSpace(strings.ToLower(message.Role))
-		if role == "" {
-			return "", "", errors.New("message role is required")
-		}
-
-		content, err := chatMessageContentText(message.Content)
-		if err != nil {
-			return "", "", err
-		}
-		if strings.TrimSpace(content) == "" {
-			continue
-		}
-
-		switch role {
-		case "system", "developer":
-			systemParts = append(systemParts, content)
-		case "user", "assistant", "tool":
-			promptParts = append(promptParts, role+": "+content)
-		default:
-			return "", "", fmt.Errorf("unsupported message role %q", role)
-		}
-	}
-
-	prompt := strings.TrimSpace(strings.Join(promptParts, "\n\n"))
-	if prompt == "" {
-		return "", "", errors.New("messages must include text content")
-	}
-
-	return strings.TrimSpace(strings.Join(systemParts, "\n\n")), prompt, nil
-}
-
-func chatMessageContentText(raw json.RawMessage) (string, error) {
-	if len(raw) == 0 || string(raw) == "null" {
-		return "", nil
-	}
-
-	var text string
-	if err := json.Unmarshal(raw, &text); err == nil {
-		return text, nil
-	}
-
-	var parts []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(raw, &parts); err != nil {
-		return "", errors.New("message content must be a string or text parts")
-	}
-
-	values := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if part.Type == "text" && strings.TrimSpace(part.Text) != "" {
-			values = append(values, part.Text)
-		}
-	}
-	return strings.TrimSpace(strings.Join(values, "\n")), nil
-}
-
 func openAIResponseFormatToSchema(format json.RawMessage) (json.RawMessage, error) {
 	if len(format) == 0 {
 		return nil, nil
@@ -481,8 +412,37 @@ func openAIResponseFormatToSchema(format json.RawMessage) (json.RawMessage, erro
 	}
 }
 
-func newChatCompletionResponse(result domain.GenerateResult) chatCompletionResponse {
-	reason := "stop"
+func domainMessages(messages []chatMessage) []domain.ChatMessage {
+	result := make([]domain.ChatMessage, 0, len(messages))
+	for _, message := range messages {
+		result = append(result, domain.ChatMessage{
+			Role:       message.Role,
+			Content:    message.Content,
+			ToolCallID: message.ToolCallID,
+			Name:       message.Name,
+			ToolCalls:  message.ToolCalls,
+		})
+	}
+	return result
+}
+
+func chatMessageContentValue(raw json.RawMessage) any {
+	if !rawJSONHasValue(raw) {
+		return nil
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil
+	}
+	return value
+}
+
+func newChatCompletionResponse(result domain.ChatResult) chatCompletionResponse {
+	reason := strings.TrimSpace(result.FinishReason)
+	if reason == "" {
+		reason = "stop"
+	}
+	content := chatMessageContentValue(result.Message.Content)
 	return chatCompletionResponse{
 		ID:      chatCompletionID(),
 		Object:  "chat.completion",
@@ -492,8 +452,9 @@ func newChatCompletionResponse(result domain.GenerateResult) chatCompletionRespo
 			{
 				Index: 0,
 				Message: &chatCompletionMessage{
-					Role:    "assistant",
-					Content: result.Text,
+					Role:      "assistant",
+					Content:   content,
+					ToolCalls: result.Message.ToolCalls,
 				},
 				FinishReason: &reason,
 			},
@@ -502,10 +463,14 @@ func newChatCompletionResponse(result domain.GenerateResult) chatCompletionRespo
 	}
 }
 
-func writeChatCompletionStream(w http.ResponseWriter, result domain.GenerateResult) {
+func writeChatCompletionStream(w http.ResponseWriter, result domain.ChatResult) {
 	id := chatCompletionID()
 	created := time.Now().Unix()
-	reason := "stop"
+	reason := strings.TrimSpace(result.FinishReason)
+	if reason == "" {
+		reason = "stop"
+	}
+	content := chatMessageContentValue(result.Message.Content)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -521,8 +486,9 @@ func writeChatCompletionStream(w http.ResponseWriter, result domain.GenerateResu
 			{
 				Index: 0,
 				Delta: &chatCompletionDelta{
-					Role:    "assistant",
-					Content: result.Text,
+					Role:      "assistant",
+					Content:   content,
+					ToolCalls: result.Message.ToolCalls,
 				},
 				FinishReason: nil,
 			},
@@ -565,14 +531,6 @@ func chatCompletionID() string {
 func rawJSONHasValue(raw json.RawMessage) bool {
 	trimmed := strings.TrimSpace(string(raw))
 	return trimmed != "" && trimmed != "null"
-}
-
-func rawJSONEqualsString(raw json.RawMessage, expected string) bool {
-	var value string
-	if err := json.Unmarshal(raw, &value); err != nil {
-		return false
-	}
-	return value == expected
 }
 
 func statusCodeFor(err error) int {

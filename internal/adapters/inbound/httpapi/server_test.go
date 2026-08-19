@@ -462,17 +462,17 @@ func TestChatCompletionsEndpoint(t *testing.T) {
 	if provider.model != "groq:openai/gpt-oss-20b" {
 		t.Fatalf("expected provider model override, got %q", provider.model)
 	}
-	if provider.request.System != "answer briefly" {
-		t.Fatalf("expected system to be forwarded, got %q", provider.request.System)
+	if len(provider.chatRequest.Messages) != 2 {
+		t.Fatalf("expected messages to be forwarded, got %#v", provider.chatRequest.Messages)
 	}
-	if provider.request.Prompt != "user: hello" {
-		t.Fatalf("unexpected prompt: %q", provider.request.Prompt)
+	if provider.chatRequest.Messages[0].Role != "system" || provider.chatRequest.Messages[1].Role != "user" {
+		t.Fatalf("unexpected messages: %#v", provider.chatRequest.Messages)
 	}
-	if provider.request.Temperature == nil || *provider.request.Temperature != 0.2 {
-		t.Fatalf("expected temperature to be forwarded, got %#v", provider.request.Temperature)
+	if provider.chatRequest.Temperature == nil || *provider.chatRequest.Temperature != 0.2 {
+		t.Fatalf("expected temperature to be forwarded, got %#v", provider.chatRequest.Temperature)
 	}
-	if provider.request.MaxOutputTokens == nil || *provider.request.MaxOutputTokens != 64 {
-		t.Fatalf("expected max_tokens to be forwarded, got %#v", provider.request.MaxOutputTokens)
+	if provider.chatRequest.MaxOutputTokens == nil || *provider.chatRequest.MaxOutputTokens != 64 {
+		t.Fatalf("expected max_tokens to be forwarded, got %#v", provider.chatRequest.MaxOutputTokens)
 	}
 }
 
@@ -516,7 +516,7 @@ func TestChatCompletionsEndpointAcceptsResponseFormat(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if len(provider.request.ResponseSchema) == 0 {
+	if len(provider.chatRequest.ResponseSchema) == 0 {
 		t.Fatal("expected response schema to be forwarded")
 	}
 }
@@ -555,8 +555,9 @@ func TestChatCompletionsEndpointStreamsSingleChunk(t *testing.T) {
 	}
 }
 
-func TestChatCompletionsEndpointAcceptsUnusedTools(t *testing.T) {
-	service, err := application.NewAIService(fakeProvider{}, []string{"gemini:gemini-3.6-flash"})
+func TestChatCompletionsEndpointUsesToolFallbacks(t *testing.T) {
+	provider := &capturingProvider{}
+	service, err := application.NewAIService(provider, []string{"gemini:gemini-3.6-flash"}, []string{"groq:openai/gpt-oss-120b"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -567,7 +568,14 @@ func TestChatCompletionsEndpointAcceptsUnusedTools(t *testing.T) {
 			{"role": "user", "content": "hello"},
 		},
 		"tools": []map[string]any{
-			{"type": "function"},
+			{
+				"type": "function",
+				"function": map[string]any{
+					"name":        "get_status",
+					"description": "Get status",
+					"parameters":  map[string]any{"type": "object"},
+				},
+			},
 		},
 		"tool_choice": "auto",
 	})
@@ -584,10 +592,28 @@ func TestChatCompletionsEndpointAcceptsUnusedTools(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
 	}
+	if provider.model != "groq:openai/gpt-oss-120b" {
+		t.Fatalf("expected tool fallback model, got %q", provider.model)
+	}
+	if len(provider.chatRequest.Tools) == 0 {
+		t.Fatal("expected tools to be forwarded")
+	}
 }
 
-func TestChatCompletionsEndpointRejectsRequiredToolChoice(t *testing.T) {
-	service, err := application.NewAIService(fakeProvider{}, []string{"gemini:gemini-3.6-flash"})
+func TestChatCompletionsEndpointReturnsToolCalls(t *testing.T) {
+	toolCalls := json.RawMessage(`[{"id":"call_1","type":"function","function":{"name":"get_status","arguments":"{}"}}]`)
+	provider := &capturingProvider{
+		chatResponse: domain.ChatResponse{
+			Model: "gemini:gemini-3.6-flash",
+			Message: domain.ChatMessage{
+				Role:      "assistant",
+				Content:   json.RawMessage("null"),
+				ToolCalls: toolCalls,
+			},
+			FinishReason: "tool_calls",
+		},
+	}
+	service, err := application.NewAIService(provider, []string{"gemini:gemini-3.6-flash"}, []string{"gemini:gemini-3.6-flash"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -598,7 +624,13 @@ func TestChatCompletionsEndpointRejectsRequiredToolChoice(t *testing.T) {
 			{"role": "user", "content": "hello"},
 		},
 		"tools": []map[string]any{
-			{"type": "function"},
+			{
+				"type": "function",
+				"function": map[string]any{
+					"name":       "get_status",
+					"parameters": map[string]any{"type": "object"},
+				},
+			},
 		},
 		"tool_choice": "required",
 	})
@@ -612,8 +644,27 @@ func TestChatCompletionsEndpointRejectsRequiredToolChoice(t *testing.T) {
 
 	server.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content   any             `json:"content"`
+				ToolCalls json.RawMessage `json:"tool_calls"`
+			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Choices) != 1 || result.Choices[0].FinishReason != "tool_calls" {
+		t.Fatalf("unexpected response: %#v", result)
+	}
+	if string(result.Choices[0].Message.ToolCalls) != string(toolCalls) {
+		t.Fatalf("unexpected tool calls: %s", result.Choices[0].Message.ToolCalls)
 	}
 }
 
@@ -623,13 +674,42 @@ func (fakeProvider) Generate(_ context.Context, model string, _ domain.GenerateR
 	return domain.GenerateResponse{Model: model, Text: "ok"}, nil
 }
 
+func (fakeProvider) Chat(_ context.Context, model string, _ domain.ChatRequest) (domain.ChatResponse, error) {
+	return domain.ChatResponse{
+		Model: model,
+		Message: domain.ChatMessage{
+			Role:    "assistant",
+			Content: json.RawMessage(`"ok"`),
+		},
+		FinishReason: "stop",
+	}, nil
+}
+
 type capturingProvider struct {
-	model   string
-	request domain.GenerateRequest
+	model        string
+	request      domain.GenerateRequest
+	chatRequest  domain.ChatRequest
+	chatResponse domain.ChatResponse
 }
 
 func (p *capturingProvider) Generate(_ context.Context, model string, req domain.GenerateRequest) (domain.GenerateResponse, error) {
 	p.model = model
 	p.request = req
 	return domain.GenerateResponse{Model: model, Text: "ok"}, nil
+}
+
+func (p *capturingProvider) Chat(_ context.Context, model string, req domain.ChatRequest) (domain.ChatResponse, error) {
+	p.model = model
+	p.chatRequest = req
+	if strings.TrimSpace(p.chatResponse.Model) != "" {
+		return p.chatResponse, nil
+	}
+	return domain.ChatResponse{
+		Model: model,
+		Message: domain.ChatMessage{
+			Role:    "assistant",
+			Content: json.RawMessage(`"ok"`),
+		},
+		FinishReason: "stop",
+	}, nil
 }

@@ -28,19 +28,37 @@ var defaultModelFallbacks = []string{
 	"openrouter:openrouter/free",
 }
 
+var defaultToolModelFallbacks = []string{
+	"gemini:gemini-3.6-flash",
+	"gemini:gemini-3.5-flash",
+	"groq:openai/gpt-oss-120b",
+	"groq:openai/gpt-oss-20b",
+	"gemini:gemini-3.5-flash-lite",
+	"gemini:gemini-3.1-flash-lite",
+	"mistral:mistral-small-latest",
+	"mistral:ministral-8b-latest",
+	"mistral:ministral-3b-latest",
+	"openrouter:openrouter/free",
+	"openrouter:z-ai/glm-5.2:free",
+	"openrouter:google/gemma-4-31b-it:free",
+	"openrouter:google/gemma-4-26b-a4b-it:free",
+	"openrouter:openai/gpt-oss-20b:free",
+}
+
 type Config struct {
-	ServerAddr        string
-	GatewayAPIKeys    []string
-	GeminiAPIKey      string
-	GeminiBaseURL     string
-	GroqAPIKey        string
-	GroqBaseURL       string
-	MistralAPIKey     string
-	MistralBaseURL    string
-	OpenRouterAPIKey  string
-	OpenRouterBaseURL string
-	ModelFallbacks    []string
-	RequestTimeout    time.Duration
+	ServerAddr         string
+	GatewayAPIKeys     []string
+	GeminiAPIKey       string
+	GeminiBaseURL      string
+	GroqAPIKey         string
+	GroqBaseURL        string
+	MistralAPIKey      string
+	MistralBaseURL     string
+	OpenRouterAPIKey   string
+	OpenRouterBaseURL  string
+	ModelFallbacks     []string
+	ToolModelFallbacks []string
+	RequestTimeout     time.Duration
 }
 
 func FromEnv() (Config, error) {
@@ -63,8 +81,9 @@ func FromEnv() (Config, error) {
 			stringFromEnv("OPENROUTER_API_BASE_URL", defaultOpenRouterAPIBaseURL),
 			"/",
 		),
-		ModelFallbacks: csvFromEnv("MODEL_FALLBACKS", csvFromEnv("GEMINI_MODEL_FALLBACKS", defaultModelFallbacks)),
-		RequestTimeout: time.Duration(timeoutSeconds) * time.Second,
+		ModelFallbacks:     csvFromEnv("MODEL_FALLBACKS", csvFromEnv("GEMINI_MODEL_FALLBACKS", defaultModelFallbacks)),
+		ToolModelFallbacks: csvFromEnv("TOOL_MODEL_FALLBACKS", defaultToolModelFallbacks),
+		RequestTimeout:     time.Duration(timeoutSeconds) * time.Second,
 	}
 
 	if cfg.GeminiAPIKey == "" && cfg.GroqAPIKey == "" && cfg.MistralAPIKey == "" && cfg.OpenRouterAPIKey == "" {

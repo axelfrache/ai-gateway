@@ -22,6 +22,31 @@ type GenerateResponse struct {
 	Text  string
 }
 
+type ChatRequest struct {
+	Messages        []ChatMessage
+	Model           string
+	Models          []string
+	Temperature     *float64
+	MaxOutputTokens *int
+	ResponseSchema  json.RawMessage
+	Tools           json.RawMessage
+	ToolChoice      json.RawMessage
+}
+
+type ChatMessage struct {
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+	Name       string          `json:"name,omitempty"`
+	ToolCalls  json.RawMessage `json:"tool_calls,omitempty"`
+}
+
+type ChatResponse struct {
+	Model        string
+	Message      ChatMessage
+	FinishReason string
+}
+
 type Attempt struct {
 	Model         string `json:"model"`
 	Status        string `json:"status"`
@@ -36,11 +61,20 @@ type GenerateResult struct {
 	Attempts     []Attempt `json:"attempts"`
 }
 
+type ChatResult struct {
+	Model        string      `json:"model"`
+	Message      ChatMessage `json:"message"`
+	FinishReason string      `json:"finish_reason"`
+	FallbackUsed bool        `json:"fallback_used"`
+	Attempts     []Attempt   `json:"attempts"`
+}
+
 type ModelInfo struct {
-	Name     string `json:"name"`
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
-	Order    int    `json:"order"`
+	Name          string `json:"name"`
+	Provider      string `json:"provider"`
+	Model         string `json:"model"`
+	Order         int    `json:"order"`
+	SupportsTools bool   `json:"supports_tools"`
 }
 
 type ModelCheck struct {
@@ -54,6 +88,10 @@ type ModelCheck struct {
 
 type AIProvider interface {
 	Generate(ctx context.Context, model string, req GenerateRequest) (GenerateResponse, error)
+}
+
+type ChatProvider interface {
+	Chat(ctx context.Context, model string, req ChatRequest) (ChatResponse, error)
 }
 
 type ErrorKind string

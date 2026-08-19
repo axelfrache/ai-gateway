@@ -11,11 +11,12 @@ import (
 )
 
 type AIService struct {
-	provider domain.AIProvider
-	models   []string
+	provider   domain.AIProvider
+	models     []string
+	toolModels []string
 }
 
-func NewAIService(provider domain.AIProvider, models []string) (*AIService, error) {
+func NewAIService(provider domain.AIProvider, models []string, toolModels ...[]string) (*AIService, error) {
 	normalized := make([]string, 0, len(models))
 	seen := map[string]struct{}{}
 
@@ -38,9 +39,18 @@ func NewAIService(provider domain.AIProvider, models []string) (*AIService, erro
 		return nil, errors.New("at least one model is required")
 	}
 
+	normalizedToolModels := normalized
+	if len(toolModels) > 0 {
+		normalizedToolModels = normalizeModels(toolModels[0])
+	}
+	if len(normalizedToolModels) == 0 {
+		normalizedToolModels = normalized
+	}
+
 	return &AIService{
-		provider: provider,
-		models:   normalized,
+		provider:   provider,
+		models:     normalized,
+		toolModels: normalizedToolModels,
 	}, nil
 }
 
@@ -96,15 +106,83 @@ func (s *AIService) Generate(ctx context.Context, req domain.GenerateRequest) (d
 	return domain.GenerateResult{Attempts: attempts}, domain.NoModelAvailable(len(attempts))
 }
 
+func (s *AIService) Chat(ctx context.Context, req domain.ChatRequest) (domain.ChatResult, error) {
+	if len(req.Messages) == 0 {
+		return domain.ChatResult{}, domain.NewError(domain.ErrorKindInvalidRequest, 0, "messages is required", nil)
+	}
+	if len(req.ResponseSchema) > 0 && !validResponseSchema(req.ResponseSchema) {
+		return domain.ChatResult{}, domain.NewError(domain.ErrorKindInvalidRequest, 0, "response_schema must be a JSON object", nil)
+	}
+
+	models, err := s.chatModelsFor(req)
+	if err != nil {
+		return domain.ChatResult{}, err
+	}
+	attempts := make([]domain.Attempt, 0, len(models))
+
+	chatProvider, ok := s.provider.(domain.ChatProvider)
+	if !ok {
+		return domain.ChatResult{}, domain.NewError(domain.ErrorKindInvalidRequest, 0, "chat completions are not supported by configured provider", nil)
+	}
+
+	for _, model := range models {
+		start := time.Now()
+		response, err := chatProvider.Chat(ctx, model, req)
+		latencyMillis := time.Since(start).Milliseconds()
+
+		if err == nil && chatResponseHasValue(response) {
+			attempts = append(attempts, domain.Attempt{
+				Model:         model,
+				Status:        "success",
+				LatencyMillis: latencyMillis,
+			})
+			return domain.ChatResult{
+				Model:        response.Model,
+				Message:      response.Message,
+				FinishReason: response.FinishReason,
+				FallbackUsed: len(attempts) > 1,
+				Attempts:     attempts,
+			}, nil
+		}
+
+		if err == nil {
+			err = domain.NewError(domain.ErrorKindTemporary, 0, "model returned an empty response", nil)
+		}
+
+		attempts = append(attempts, domain.Attempt{
+			Model:         model,
+			Status:        "failed",
+			Error:         err.Error(),
+			LatencyMillis: latencyMillis,
+		})
+
+		if !domain.Retryable(err) {
+			return domain.ChatResult{Attempts: attempts}, err
+		}
+	}
+
+	return domain.ChatResult{Attempts: attempts}, domain.NoModelAvailable(len(attempts))
+}
+
 func (s *AIService) Models() []domain.ModelInfo {
-	models := make([]domain.ModelInfo, 0, len(s.models))
-	for i, model := range s.models {
+	candidates := append([]string(nil), s.models...)
+	candidates = append(candidates, s.toolModels...)
+	candidates = normalizeModels(candidates)
+	toolModels := map[string]struct{}{}
+	for _, model := range s.toolModels {
+		toolModels[model] = struct{}{}
+	}
+
+	models := make([]domain.ModelInfo, 0, len(candidates))
+	for i, model := range candidates {
 		provider, name := splitModel(model)
+		_, supportsTools := toolModels[model]
 		models = append(models, domain.ModelInfo{
-			Name:     model,
-			Provider: provider,
-			Model:    name,
-			Order:    i + 1,
+			Name:          model,
+			Provider:      provider,
+			Model:         name,
+			Order:         i + 1,
+			SupportsTools: supportsTools,
 		})
 	}
 	return models
@@ -158,6 +236,22 @@ func (s *AIService) modelsFor(req domain.GenerateRequest) ([]string, error) {
 	return append([]string(nil), s.models...), nil
 }
 
+func (s *AIService) chatModelsFor(req domain.ChatRequest) ([]string, error) {
+	if strings.TrimSpace(req.Model) != "" && len(req.Models) > 0 {
+		return nil, domain.NewError(domain.ErrorKindInvalidRequest, 0, "use either model or models, not both", nil)
+	}
+	if strings.TrimSpace(req.Model) != "" {
+		return []string{strings.TrimSpace(req.Model)}, nil
+	}
+	if models := normalizeModels(req.Models); len(models) > 0 {
+		return models, nil
+	}
+	if chatRequestHasTools(req) {
+		return append([]string(nil), s.toolModels...), nil
+	}
+	return append([]string(nil), s.models...), nil
+}
+
 func validResponseSchema(schema json.RawMessage) bool {
 	if !json.Valid(schema) {
 		return false
@@ -185,6 +279,33 @@ func normalizeModels(models []string) []string {
 		normalized = append(normalized, model)
 	}
 	return normalized
+}
+
+func chatRequestHasTools(req domain.ChatRequest) bool {
+	return rawJSONHasValue(req.Tools) && !rawJSONEquals(req.Tools, "[]") && !rawJSONEquals(req.Tools, "{}")
+}
+
+func chatResponseHasValue(response domain.ChatResponse) bool {
+	if rawJSONHasValue(response.Message.ToolCalls) {
+		return true
+	}
+	if !rawJSONHasValue(response.Message.Content) {
+		return false
+	}
+	var text string
+	if err := json.Unmarshal(response.Message.Content, &text); err == nil {
+		return strings.TrimSpace(text) != ""
+	}
+	return true
+}
+
+func rawJSONHasValue(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return trimmed != "" && trimmed != "null"
+}
+
+func rawJSONEquals(raw json.RawMessage, value string) bool {
+	return strings.TrimSpace(string(raw)) == value
 }
 
 func splitModel(candidate string) (string, string) {

@@ -51,6 +51,38 @@ func (r *Router) Generate(ctx context.Context, candidate string, req domain.Gene
 	return response, nil
 }
 
+func (r *Router) Chat(ctx context.Context, candidate string, req domain.ChatRequest) (domain.ChatResponse, error) {
+	providerName, model := splitCandidate(candidate, r.defaultProvider)
+	provider := r.providers[providerName]
+	if provider == nil {
+		return domain.ChatResponse{}, domain.NewError(
+			domain.ErrorKindModelUnavailable,
+			0,
+			fmt.Sprintf("provider %q is not configured", providerName),
+			nil,
+		)
+	}
+
+	chatProvider, ok := provider.(domain.ChatProvider)
+	if !ok {
+		return domain.ChatResponse{}, domain.NewError(
+			domain.ErrorKindModelUnavailable,
+			0,
+			fmt.Sprintf("provider %q does not support chat completions", providerName),
+			nil,
+		)
+	}
+
+	response, err := chatProvider.Chat(ctx, model, req)
+	if err != nil {
+		return domain.ChatResponse{}, err
+	}
+	if providerName != "" && !strings.HasPrefix(response.Model, providerName+":") {
+		response.Model = providerName + ":" + response.Model
+	}
+	return response, nil
+}
+
 func splitCandidate(candidate, defaultProvider string) (string, string) {
 	candidate = strings.TrimSpace(candidate)
 	providerName := defaultProvider

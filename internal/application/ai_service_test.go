@@ -135,7 +135,11 @@ func TestGenerateRejectsModelAndModelsTogether(t *testing.T) {
 }
 
 func TestModelsReturnsConfiguredModels(t *testing.T) {
-	service, err := NewAIService(fakeProvider{}, []string{"gemini:gemini-3.6-flash", "groq:openai/gpt-oss-20b"})
+	service, err := NewAIService(
+		fakeProvider{},
+		[]string{"gemini:gemini-3.6-flash"},
+		[]string{"gemini:gemini-3.6-flash", "groq:openai/gpt-oss-20b"},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,6 +150,9 @@ func TestModelsReturnsConfiguredModels(t *testing.T) {
 	}
 	if models[0].Provider != "gemini" || models[0].Model != "gemini-3.6-flash" || models[0].Order != 1 {
 		t.Fatalf("unexpected first model: %#v", models[0])
+	}
+	if !models[0].SupportsTools || !models[1].SupportsTools {
+		t.Fatalf("expected tool support metadata, got %#v", models)
 	}
 }
 
@@ -164,9 +171,80 @@ func TestGenerateRequiresPrompt(t *testing.T) {
 	}
 }
 
+func TestChatUsesToolFallbacks(t *testing.T) {
+	provider := fakeProvider{
+		chatResponses: map[string]domain.ChatResponse{
+			"groq:openai/gpt-oss-120b": {
+				Model: "groq:openai/gpt-oss-120b",
+				Message: domain.ChatMessage{
+					Role:    "assistant",
+					Content: []byte(`"ok"`),
+				},
+			},
+		},
+	}
+	service, err := NewAIService(provider, []string{"gemini:gemini-3.6-flash"}, []string{"groq:openai/gpt-oss-120b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.Chat(context.Background(), domain.ChatRequest{
+		Messages: []domain.ChatMessage{
+			{Role: "user", Content: []byte(`"hello"`)},
+		},
+		Tools: []byte(`[{"type":"function","function":{"name":"get_status"}}]`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Model != "groq:openai/gpt-oss-120b" {
+		t.Fatalf("expected tool fallback model, got %q", result.Model)
+	}
+}
+
+func TestChatFallsBackOnRetryableError(t *testing.T) {
+	provider := fakeProvider{
+		chatErrors: map[string]error{
+			"gemini:gemini-3.6-flash": domain.NewError(domain.ErrorKindRateLimited, 429, "quota exceeded", nil),
+		},
+		chatResponses: map[string]domain.ChatResponse{
+			"groq:openai/gpt-oss-120b": {
+				Model: "groq:openai/gpt-oss-120b",
+				Message: domain.ChatMessage{
+					Role:    "assistant",
+					Content: []byte(`"ok"`),
+				},
+			},
+		},
+	}
+	service, err := NewAIService(provider, []string{"gemini:gemini-3.6-flash", "groq:openai/gpt-oss-120b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.Chat(context.Background(), domain.ChatRequest{
+		Messages: []domain.ChatMessage{
+			{Role: "user", Content: []byte(`"hello"`)},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Model != "groq:openai/gpt-oss-120b" || !result.FallbackUsed {
+		t.Fatalf("unexpected fallback result: %#v", result)
+	}
+	if len(result.Attempts) != 2 {
+		t.Fatalf("expected 2 attempts, got %d", len(result.Attempts))
+	}
+}
+
 type fakeProvider struct {
-	responses map[string]domain.GenerateResponse
-	errors    map[string]error
+	responses     map[string]domain.GenerateResponse
+	errors        map[string]error
+	chatResponses map[string]domain.ChatResponse
+	chatErrors    map[string]error
 }
 
 func (p fakeProvider) Generate(_ context.Context, model string, _ domain.GenerateRequest) (domain.GenerateResponse, error) {
@@ -181,4 +259,18 @@ func (p fakeProvider) Generate(_ context.Context, model string, _ domain.Generat
 		}
 	}
 	return domain.GenerateResponse{}, errors.New("unexpected model")
+}
+
+func (p fakeProvider) Chat(_ context.Context, model string, _ domain.ChatRequest) (domain.ChatResponse, error) {
+	if p.chatErrors != nil {
+		if err := p.chatErrors[model]; err != nil {
+			return domain.ChatResponse{}, err
+		}
+	}
+	if p.chatResponses != nil {
+		if response, ok := p.chatResponses[model]; ok {
+			return response, nil
+		}
+	}
+	return domain.ChatResponse{}, errors.New("unexpected model")
 }

@@ -37,6 +37,29 @@ It is designed for structured JSON responses, free-tier-friendly routing, and a 
 | Mistral | `mistral-small-latest`, `mistral-medium-latest`, `mistral-large-latest`, `ministral-8b-latest`, `ministral-3b-latest` |
 | OpenRouter | `openrouter/free` |
 
+## Tool Calling
+
+`/v1/chat/completions` accepts OpenAI-compatible `tools`, `tool_choice`, assistant `tool_calls`, and `tool` result messages. When a request includes tools and no explicit model is set, AI Gateway uses the dedicated tool-capable fallback chain:
+
+```text
+gemini:gemini-3.6-flash
+gemini:gemini-3.5-flash
+groq:openai/gpt-oss-120b
+groq:openai/gpt-oss-20b
+gemini:gemini-3.5-flash-lite
+gemini:gemini-3.1-flash-lite
+mistral:mistral-small-latest
+mistral:ministral-8b-latest
+mistral:ministral-3b-latest
+openrouter:openrouter/free
+openrouter:z-ai/glm-5.2:free
+openrouter:google/gemma-4-31b-it:free
+openrouter:google/gemma-4-26b-a4b-it:free
+openrouter:openai/gpt-oss-20b:free
+```
+
+Tool execution is still performed by the caller or by a future gateway tool runner. The gateway preserves tool state and can fall back between compatible models across follow-up calls that include prior `tool_calls` and `tool` results.
+
 ## Getting Started
 
 ### Prerequisites
@@ -152,7 +175,7 @@ OPENAI_API_BASE_URL=http://ai-gateway.ai-gateway.svc.cluster.local:8080/v1
 OPENAI_API_KEY=change-me
 ```
 
-`stream: true` is accepted and returned as a single server-sent event chunk. Tool calling is rejected because gateway tool execution is not implemented yet.
+`stream: true` is accepted and returned as a single server-sent event chunk.
 
 ## Ollama-Compatible API
 
@@ -197,6 +220,7 @@ curl -s http://localhost:8080/api/generate \
 | `REQUEST_TIMEOUT_SECONDS` | Timeout per model attempt |
 | `GATEWAY_API_KEYS` | Comma-separated API keys allowed to call protected endpoints |
 | `MODEL_FALLBACKS` | Ordered fallback chain using `provider:model` |
+| `TOOL_MODEL_FALLBACKS` | Ordered fallback chain for chat completion requests that include tools |
 
 ## Code Quality
 
