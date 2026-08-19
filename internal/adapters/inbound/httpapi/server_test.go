@@ -156,11 +156,19 @@ func TestModelsEndpoint(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Models) != 2 {
-		t.Fatalf("expected 2 models, got %d", len(result.Models))
+	if len(result.Models) != 5 {
+		t.Fatalf("expected 3 aliases + 2 real models, got %d: %#v", len(result.Models), result.Models)
 	}
-	if result.Models[0].Provider != "gemini" || result.Models[0].Model != "gemini-3.6-flash" {
+	if result.Models[0].Name != application.AliasAuto || result.Models[0].Provider != "ai-gateway" {
 		t.Fatalf("unexpected first model: %#v", result.Models[0])
+	}
+
+	byName := map[string]domain.ModelInfo{}
+	for _, model := range result.Models {
+		byName[model.Name] = model
+	}
+	if real := byName["gemini:gemini-3.6-flash"]; real.Provider != "gemini" || real.Model != "gemini-3.6-flash" {
+		t.Fatalf("unexpected real model: %#v", real)
 	}
 }
 
@@ -195,8 +203,17 @@ func TestModelsEndpointIncludesOpenAIShape(t *testing.T) {
 	if result.Object != "list" {
 		t.Fatalf("expected object list, got %q", result.Object)
 	}
-	if len(result.Data) != 1 || result.Data[0].ID != "gemini:gemini-3.6-flash" || result.Data[0].Object != "model" {
-		t.Fatalf("unexpected OpenAI model data: %#v", result.Data)
+	if len(result.Data) != 4 {
+		t.Fatalf("expected 3 aliases + 1 real model, got %d: %#v", len(result.Data), result.Data)
+	}
+	found := false
+	for _, model := range result.Data {
+		if model.ID == "gemini:gemini-3.6-flash" && model.Object == "model" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected real model in OpenAI model data: %#v", result.Data)
 	}
 }
 
@@ -269,14 +286,24 @@ func TestOllamaTagsEndpoint(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Models) != 2 {
-		t.Fatalf("expected 2 models, got %d", len(result.Models))
+	if len(result.Models) != 5 {
+		t.Fatalf("expected 3 aliases + 2 real models, got %d: %#v", len(result.Models), result.Models)
 	}
-	if result.Models[0].Name != "gemini:gemini-3.6-flash" || result.Models[0].Model != "gemini:gemini-3.6-flash" {
+	if result.Models[0].Name != application.AliasAuto || result.Models[0].Model != application.AliasAuto {
 		t.Fatalf("unexpected first model: %#v", result.Models[0])
 	}
-	if result.Models[0].Details.Format != "remote" || result.Models[0].Details.Family != "gemini" {
-		t.Fatalf("unexpected model details: %#v", result.Models[0].Details)
+	if result.Models[0].Details.Format != "remote" || result.Models[0].Details.Family != "ai-gateway" {
+		t.Fatalf("unexpected alias model details: %#v", result.Models[0].Details)
+	}
+
+	found := false
+	for _, model := range result.Models {
+		if model.Name == "gemini:gemini-3.6-flash" && model.Details.Family == "gemini" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected real gemini model in tags, got %#v", result.Models)
 	}
 }
 

@@ -58,6 +58,7 @@ type Config struct {
 	OpenRouterBaseURL  string
 	ModelFallbacks     []string
 	ToolModelFallbacks []string
+	JSONModelFallbacks []string
 	MCPServers         []MCPServer
 	MCPAllowedTools    []string
 	MCPDeniedTools     []string
@@ -112,6 +113,7 @@ func FromEnv() (Config, error) {
 		),
 		ModelFallbacks:     csvFromEnv("MODEL_FALLBACKS", csvFromEnv("GEMINI_MODEL_FALLBACKS", defaultModelFallbacks)),
 		ToolModelFallbacks: csvFromEnv("TOOL_MODEL_FALLBACKS", defaultToolModelFallbacks),
+		JSONModelFallbacks: csvFromEnv("JSON_MODEL_FALLBACKS", defaultModelFallbacks),
 		MCPServers:         mcpServers,
 		MCPAllowedTools:    csvFromEnv("MCP_ALLOWED_TOOLS", nil),
 		MCPDeniedTools:     csvFromEnv("MCP_DENIED_TOOLS", nil),

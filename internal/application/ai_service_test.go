@@ -146,14 +146,116 @@ func TestModelsReturnsConfiguredModels(t *testing.T) {
 	}
 
 	models := service.Models()
-	if len(models) != 2 {
-		t.Fatalf("expected 2 models, got %d", len(models))
+	if len(models) != 5 {
+		t.Fatalf("expected 3 aliases + 2 real models, got %d: %#v", len(models), models)
 	}
-	if models[0].Provider != "gemini" || models[0].Model != "gemini-3.6-flash" || models[0].Order != 1 {
-		t.Fatalf("unexpected first model: %#v", models[0])
+
+	byName := map[string]domain.ModelInfo{}
+	for _, model := range models {
+		byName[model.Name] = model
 	}
-	if !models[0].SupportsTools || !models[1].SupportsTools {
-		t.Fatalf("expected tool support metadata, got %#v", models)
+
+	if !byName[AliasAuto].SupportsJSON || byName[AliasAuto].SupportsTools {
+		t.Fatalf("unexpected auto alias metadata: %#v", byName[AliasAuto])
+	}
+	if !byName[AliasTools].SupportsTools || byName[AliasTools].SupportsJSON {
+		t.Fatalf("unexpected tools alias metadata: %#v", byName[AliasTools])
+	}
+	if !byName[AliasJSON].SupportsJSON || byName[AliasJSON].SupportsTools {
+		t.Fatalf("unexpected json alias metadata: %#v", byName[AliasJSON])
+	}
+
+	real := byName["gemini:gemini-3.6-flash"]
+	if real.Provider != "gemini" || real.Model != "gemini-3.6-flash" {
+		t.Fatalf("unexpected real model: %#v", real)
+	}
+	if !real.SupportsTools {
+		t.Fatalf("expected tool support metadata, got %#v", real)
+	}
+}
+
+func TestGenerateResolvesJSONAlias(t *testing.T) {
+	provider := fakeProvider{
+		responses: map[string]domain.GenerateResponse{
+			"mistral:mistral-small-latest": {Model: "mistral:mistral-small-latest", Text: "ok"},
+		},
+	}
+	service, err := NewAIService(
+		provider,
+		[]string{"gemini:gemini-3.6-flash"},
+		[]string{"groq:openai/gpt-oss-120b"},
+		[]string{"mistral:mistral-small-latest"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.Generate(context.Background(), domain.GenerateRequest{
+		Prompt: "hello",
+		Model:  AliasJSON,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Model != "mistral:mistral-small-latest" {
+		t.Fatalf("expected json alias model, got %q", result.Model)
+	}
+}
+
+func TestChatResolvesToolsAlias(t *testing.T) {
+	provider := fakeProvider{
+		chatResponses: map[string]domain.ChatResponse{
+			"groq:openai/gpt-oss-120b": {
+				Model: "groq:openai/gpt-oss-120b",
+				Message: domain.ChatMessage{
+					Role:    "assistant",
+					Content: []byte(`"ok"`),
+				},
+			},
+		},
+	}
+	service, err := NewAIService(
+		provider,
+		[]string{"gemini:gemini-3.6-flash"},
+		[]string{"groq:openai/gpt-oss-120b"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.Chat(context.Background(), domain.ChatRequest{
+		Messages: []domain.ChatMessage{{Role: "user", Content: []byte(`"hello"`)}},
+		Model:    AliasTools,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Model != "groq:openai/gpt-oss-120b" {
+		t.Fatalf("expected tools alias model, got %q", result.Model)
+	}
+}
+
+func TestCheckModelsExpandsAlias(t *testing.T) {
+	provider := fakeProvider{
+		errors: map[string]error{
+			"groq:openai/gpt-oss-120b": domain.NewError(domain.ErrorKindTemporary, 500, "down", nil),
+		},
+	}
+	service, err := NewAIService(
+		provider,
+		[]string{"gemini:gemini-3.6-flash"},
+		[]string{"groq:openai/gpt-oss-120b"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	checks := service.CheckModels(context.Background(), []string{AliasTools})
+	if len(checks) != 1 {
+		t.Fatalf("expected 1 expanded check, got %d: %#v", len(checks), checks)
+	}
+	if checks[0].Name != "groq:openai/gpt-oss-120b" || checks[0].Status != "unavailable" {
+		t.Fatalf("unexpected check result: %#v", checks[0])
 	}
 }
 

@@ -11,15 +11,41 @@ import (
 	"github.com/frachea/ai-gateway/internal/domain"
 )
 
+// Model aliases let clients pick a curated fallback chain by name — the way an
+// OpenAI-compatible model picker (Open WebUI, n8n, ...) would — instead of a
+// single "provider:model" candidate. They are resolved entirely inside
+// AIService and never reach the outbound router.
+const (
+	AliasAuto  = "ai-gateway:auto"
+	AliasTools = "ai-gateway:tools"
+	AliasJSON  = "ai-gateway:json"
+)
+
+const aliasProvider = "ai-gateway"
+
+var modelAliases = []struct {
+	name          string
+	model         string
+	supportsTools bool
+	supportsJSON  bool
+}{
+	{name: AliasAuto, model: "auto", supportsTools: false, supportsJSON: true},
+	{name: AliasJSON, model: "json", supportsTools: false, supportsJSON: true},
+	{name: AliasTools, model: "tools", supportsTools: true, supportsJSON: false},
+}
+
 type AIService struct {
 	provider      domain.AIProvider
 	models        []string
 	toolModels    []string
+	jsonModels    []string
 	toolExecutor  domain.ToolExecutor
 	maxToolRounds int
 }
 
-func NewAIService(provider domain.AIProvider, models []string, toolModels ...[]string) (*AIService, error) {
+// extra optionally carries [toolModels, jsonModels]. Either or both may be
+// omitted, in which case they default to models.
+func NewAIService(provider domain.AIProvider, models []string, extra ...[]string) (*AIService, error) {
 	normalized := make([]string, 0, len(models))
 	seen := map[string]struct{}{}
 
@@ -43,19 +69,56 @@ func NewAIService(provider domain.AIProvider, models []string, toolModels ...[]s
 	}
 
 	normalizedToolModels := normalized
-	if len(toolModels) > 0 {
-		normalizedToolModels = normalizeModels(toolModels[0])
+	if len(extra) > 0 && len(extra[0]) > 0 {
+		normalizedToolModels = normalizeModels(extra[0])
 	}
 	if len(normalizedToolModels) == 0 {
 		normalizedToolModels = normalized
+	}
+
+	normalizedJSONModels := normalized
+	if len(extra) > 1 && len(extra[1]) > 0 {
+		normalizedJSONModels = normalizeModels(extra[1])
+	}
+	if len(normalizedJSONModels) == 0 {
+		normalizedJSONModels = normalized
 	}
 
 	return &AIService{
 		provider:      provider,
 		models:        normalized,
 		toolModels:    normalizedToolModels,
+		jsonModels:    normalizedJSONModels,
 		maxToolRounds: 4,
 	}, nil
+}
+
+// resolveAlias returns the fallback chain a model alias stands for, and
+// whether model was in fact an alias.
+func (s *AIService) resolveAlias(model string) ([]string, bool) {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case AliasAuto:
+		return append([]string(nil), s.models...), true
+	case AliasTools:
+		return append([]string(nil), s.toolModels...), true
+	case AliasJSON:
+		return append([]string(nil), s.jsonModels...), true
+	default:
+		return nil, false
+	}
+}
+
+// expandAliases replaces any alias in models with its underlying chain.
+func (s *AIService) expandAliases(models []string) []string {
+	expanded := make([]string, 0, len(models))
+	for _, model := range models {
+		if resolved, ok := s.resolveAlias(model); ok {
+			expanded = append(expanded, resolved...)
+			continue
+		}
+		expanded = append(expanded, model)
+	}
+	return normalizeModels(expanded)
 }
 
 func (s *AIService) SetToolExecutor(executor domain.ToolExecutor, maxToolRounds int) {
@@ -250,22 +313,42 @@ func (s *AIService) chatOnce(ctx context.Context, req domain.ChatRequest) (domai
 func (s *AIService) Models() []domain.ModelInfo {
 	candidates := append([]string(nil), s.models...)
 	candidates = append(candidates, s.toolModels...)
+	candidates = append(candidates, s.jsonModels...)
 	candidates = normalizeModels(candidates)
 	toolModels := map[string]struct{}{}
 	for _, model := range s.toolModels {
 		toolModels[model] = struct{}{}
 	}
+	jsonModels := map[string]struct{}{}
+	for _, model := range s.jsonModels {
+		jsonModels[model] = struct{}{}
+	}
 
-	models := make([]domain.ModelInfo, 0, len(candidates))
-	for i, model := range candidates {
+	models := make([]domain.ModelInfo, 0, len(candidates)+len(modelAliases))
+	order := 0
+	for _, alias := range modelAliases {
+		order++
+		models = append(models, domain.ModelInfo{
+			Name:          alias.name,
+			Provider:      aliasProvider,
+			Model:         alias.model,
+			Order:         order,
+			SupportsTools: alias.supportsTools,
+			SupportsJSON:  alias.supportsJSON,
+		})
+	}
+	for _, model := range candidates {
+		order++
 		provider, name := splitModel(model)
 		_, supportsTools := toolModels[model]
+		_, supportsJSON := jsonModels[model]
 		models = append(models, domain.ModelInfo{
 			Name:          model,
 			Provider:      provider,
 			Model:         name,
-			Order:         i + 1,
+			Order:         order,
 			SupportsTools: supportsTools,
+			SupportsJSON:  supportsJSON,
 		})
 	}
 	return models
@@ -276,6 +359,7 @@ func (s *AIService) CheckModels(ctx context.Context, models []string) []domain.M
 	if len(candidates) == 0 {
 		candidates = append([]string(nil), s.models...)
 	}
+	candidates = s.expandAliases(candidates)
 
 	maxTokens := 128
 	request := domain.GenerateRequest{
@@ -311,6 +395,9 @@ func (s *AIService) modelsFor(req domain.GenerateRequest) ([]string, error) {
 		return nil, domain.NewError(domain.ErrorKindInvalidRequest, 0, "use either model or models, not both", nil)
 	}
 	if strings.TrimSpace(req.Model) != "" {
+		if models, ok := s.resolveAlias(req.Model); ok {
+			return models, nil
+		}
 		return []string{strings.TrimSpace(req.Model)}, nil
 	}
 	if models := normalizeModels(req.Models); len(models) > 0 {
@@ -324,6 +411,9 @@ func (s *AIService) chatModelsFor(req domain.ChatRequest) ([]string, error) {
 		return nil, domain.NewError(domain.ErrorKindInvalidRequest, 0, "use either model or models, not both", nil)
 	}
 	if strings.TrimSpace(req.Model) != "" {
+		if models, ok := s.resolveAlias(req.Model); ok {
+			return models, nil
+		}
 		return []string{strings.TrimSpace(req.Model)}, nil
 	}
 	if models := normalizeModels(req.Models); len(models) > 0 {

@@ -34,6 +34,35 @@ func TestFromEnvLoadsMCPServers(t *testing.T) {
 	}
 }
 
+func TestFromEnvDefaultsJSONModelFallbacksToModelFallbacks(t *testing.T) {
+	t.Setenv("GATEWAY_API_KEYS", "gateway-key")
+	t.Setenv("GEMINI_API_KEY", "gemini-key")
+
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(cfg.JSONModelFallbacks) != len(cfg.ModelFallbacks) {
+		t.Fatalf("expected JSON_MODEL_FALLBACKS to default to MODEL_FALLBACKS, got %#v vs %#v", cfg.JSONModelFallbacks, cfg.ModelFallbacks)
+	}
+}
+
+func TestFromEnvLoadsJSONModelFallbacksOverride(t *testing.T) {
+	t.Setenv("GATEWAY_API_KEYS", "gateway-key")
+	t.Setenv("GEMINI_API_KEY", "gemini-key")
+	t.Setenv("JSON_MODEL_FALLBACKS", "gemini:gemini-3.6-flash,mistral:mistral-small-latest")
+
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(cfg.JSONModelFallbacks) != 2 || cfg.JSONModelFallbacks[1] != "mistral:mistral-small-latest" {
+		t.Fatalf("unexpected JSON model fallbacks: %#v", cfg.JSONModelFallbacks)
+	}
+}
+
 func TestFromEnvRejectsInvalidMCPServer(t *testing.T) {
 	t.Setenv("GATEWAY_API_KEYS", "gateway-key")
 	t.Setenv("GEMINI_API_KEY", "gemini-key")

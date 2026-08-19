@@ -88,6 +88,7 @@ type ModelInfo struct {
 	Model         string `json:"model"`
 	Order         int    `json:"order"`
 	SupportsTools bool   `json:"supports_tools"`
+	SupportsJSON  bool   `json:"supports_json"`
 }
 
 type ModelCheck struct {

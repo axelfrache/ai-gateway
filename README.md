@@ -38,6 +38,20 @@ It is designed for structured JSON responses, free-tier-friendly routing, and a 
 | Mistral | `mistral-small-latest`, `mistral-medium-latest`, `mistral-large-latest`, `ministral-8b-latest`, `ministral-3b-latest` |
 | OpenRouter | `openrouter/free` |
 
+## Model Aliases
+
+Clients that pick a model from a dropdown (Open WebUI, n8n's OpenAI Chat Model node, or any tool that discovers models via `GET /v1/models` / `GET /api/tags`) don't send an empty `model` field — they always send a specific ID. AI Gateway's per-request fallback only kicks in for the models/tool-models chain when `model`/`models` is omitted, so a literal `gemini:gemini-3.6-flash` selection bypasses fallback entirely.
+
+To let those clients opt into a fallback chain the same way they'd pick any other model, AI Gateway exposes three virtual model IDs, resolved entirely server-side before reaching any provider:
+
+| Alias | Resolves to | Use case |
+|-------|-------------|----------|
+| `ai-gateway:auto` | `MODEL_FALLBACKS` | General-purpose text generation with fallback |
+| `ai-gateway:json` | `JSON_MODEL_FALLBACKS` | Structured JSON output (`response_format` / `response_schema`) with fallback |
+| `ai-gateway:tools` | `TOOL_MODEL_FALLBACKS` | Tool/function calling (including MCP) with fallback |
+
+They appear alongside real models in `GET /v1/models` and `GET /api/tags`, so any OpenAI- or Ollama-compatible client can select `ai-gateway:auto` (or `:json` / `:tools`) directly from its model picker and get the gateway's full fallback behavior instead of a single pinned model. They work as `model` in `/v1/generate`, `/v1/chat/completions`, and `/api/generate`, and `POST /v1/models/check` expands them to their underlying chain so you can probe availability per real model.
+
 ## Tool Calling
 
 `/v1/chat/completions` accepts OpenAI-compatible `tools`, `tool_choice`, assistant `tool_calls`, and `tool` result messages. When a request includes tools and no explicit model is set, AI Gateway uses the dedicated tool-capable fallback chain:
@@ -253,8 +267,9 @@ curl -s http://localhost:8080/api/generate \
 | `REQUEST_TIMEOUT_SECONDS` | Timeout per model attempt |
 | `GATEWAY_API_KEYS` | Comma-separated API keys allowed to call protected endpoints |
 | `MCP_SMOKE_HOST_PORT` | Host port used by the Docker Compose MCP smoke server |
-| `MODEL_FALLBACKS` | Ordered fallback chain using `provider:model` |
-| `TOOL_MODEL_FALLBACKS` | Ordered fallback chain for chat completion requests that include tools |
+| `MODEL_FALLBACKS` | Ordered fallback chain using `provider:model`, and the chain used by the `ai-gateway:auto` alias |
+| `TOOL_MODEL_FALLBACKS` | Ordered fallback chain for chat completion requests that include tools, and for the `ai-gateway:tools` alias |
+| `JSON_MODEL_FALLBACKS` | Ordered fallback chain for the `ai-gateway:json` alias; defaults to `MODEL_FALLBACKS` |
 | `MCP_SERVERS` | Comma-separated MCP servers using `name=url`; empty disables gateway-side MCP tools |
 | `MCP_BEARER_TOKENS` | Optional comma-separated MCP bearer tokens using `name=token` |
 | `MCP_ALLOWED_TOOLS` | Optional allow list for exposed MCP tools; supports exact names, prefix `*`, and suffix `*` |
