@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -240,6 +241,117 @@ func TestChatFallsBackOnRetryableError(t *testing.T) {
 	}
 }
 
+func TestChatExecutesGatewayToolCalls(t *testing.T) {
+	provider := &scriptedChatProvider{
+		responses: []domain.ChatResponse{
+			{
+				Model: "gemini:gemini-3.6-flash",
+				Message: domain.ChatMessage{
+					Role:      "assistant",
+					Content:   json.RawMessage("null"),
+					ToolCalls: json.RawMessage(`[{"id":"call_1","type":"function","function":{"name":"kube__get_pods","arguments":"{\"namespace\":\"ai\"}"}}]`),
+				},
+				FinishReason: "tool_calls",
+			},
+			{
+				Model: "gemini:gemini-3.6-flash",
+				Message: domain.ChatMessage{
+					Role:    "assistant",
+					Content: json.RawMessage(`"Pods are ready"`),
+				},
+				FinishReason: "stop",
+			},
+		},
+	}
+	executor := &fakeToolExecutor{
+		tools: []domain.ToolDefinition{
+			{
+				Name:        "kube__get_pods",
+				Description: "List pods",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"namespace":{"type":"string"}}}`),
+			},
+		},
+		result: domain.ToolResult{
+			ToolCallID: "call_1",
+			Name:       "kube__get_pods",
+			Content:    `{"pods":["ai-gateway"]}`,
+		},
+	}
+	service, err := NewAIService(provider, []string{"gemini:gemini-3.6-flash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.SetToolExecutor(executor, 4)
+
+	result, err := service.Chat(context.Background(), domain.ChatRequest{
+		Messages: []domain.ChatMessage{
+			{Role: "user", Content: json.RawMessage(`"list ai pods"`)},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.FinishReason != "stop" || string(result.Message.Content) != `"Pods are ready"` {
+		t.Fatalf("unexpected final response: %#v", result)
+	}
+	if provider.calls != 2 {
+		t.Fatalf("expected 2 chat calls, got %d", provider.calls)
+	}
+	if executor.executedName != "kube__get_pods" || executor.executedArguments != `{"namespace":"ai"}` {
+		t.Fatalf("unexpected tool execution: %q %q", executor.executedName, executor.executedArguments)
+	}
+	lastRequest := provider.requests[0]
+	if len(lastRequest.Tools) == 0 {
+		t.Fatal("expected gateway tools to be injected")
+	}
+	if len(provider.requests[1].Messages) != 3 {
+		t.Fatalf("expected tool result appended before second chat call, got %d messages", len(provider.requests[1].Messages))
+	}
+}
+
+func TestChatDoesNotPartiallyExecuteMixedToolCalls(t *testing.T) {
+	provider := &scriptedChatProvider{
+		responses: []domain.ChatResponse{
+			{
+				Model: "gemini:gemini-3.6-flash",
+				Message: domain.ChatMessage{
+					Role:      "assistant",
+					Content:   json.RawMessage("null"),
+					ToolCalls: json.RawMessage(`[{"id":"call_1","type":"function","function":{"name":"kube__get_pods","arguments":"{}"}},{"id":"call_2","type":"function","function":{"name":"caller_tool","arguments":"{}"}}]`),
+				},
+				FinishReason: "tool_calls",
+			},
+		},
+	}
+	executor := &fakeToolExecutor{
+		tools: []domain.ToolDefinition{{Name: "kube__get_pods", Parameters: json.RawMessage(`{"type":"object"}`)}},
+	}
+	service, err := NewAIService(provider, []string{"gemini:gemini-3.6-flash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.SetToolExecutor(executor, 4)
+
+	result, err := service.Chat(context.Background(), domain.ChatRequest{
+		Messages: []domain.ChatMessage{{Role: "user", Content: json.RawMessage(`"run tools"`)}},
+		Tools:    json.RawMessage(`[{"type":"function","function":{"name":"caller_tool","parameters":{"type":"object"}}}]`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if provider.calls != 1 {
+		t.Fatalf("expected one chat call, got %d", provider.calls)
+	}
+	if executor.executedName != "" {
+		t.Fatalf("expected no partial execution, got %q", executor.executedName)
+	}
+	if len(result.Message.ToolCalls) == 0 {
+		t.Fatal("expected tool calls to be returned")
+	}
+}
+
 type fakeProvider struct {
 	responses     map[string]domain.GenerateResponse
 	errors        map[string]error
@@ -273,4 +385,44 @@ func (p fakeProvider) Chat(_ context.Context, model string, _ domain.ChatRequest
 		}
 	}
 	return domain.ChatResponse{}, errors.New("unexpected model")
+}
+
+type scriptedChatProvider struct {
+	responses []domain.ChatResponse
+	requests  []domain.ChatRequest
+	calls     int
+}
+
+func (p *scriptedChatProvider) Generate(_ context.Context, _ string, _ domain.GenerateRequest) (domain.GenerateResponse, error) {
+	return domain.GenerateResponse{}, errors.New("unexpected generate")
+}
+
+func (p *scriptedChatProvider) Chat(_ context.Context, _ string, req domain.ChatRequest) (domain.ChatResponse, error) {
+	p.requests = append(p.requests, req)
+	if p.calls >= len(p.responses) {
+		return domain.ChatResponse{}, errors.New("unexpected chat call")
+	}
+	response := p.responses[p.calls]
+	p.calls++
+	return response, nil
+}
+
+type fakeToolExecutor struct {
+	tools             []domain.ToolDefinition
+	result            domain.ToolResult
+	executedName      string
+	executedArguments string
+}
+
+func (e *fakeToolExecutor) ListTools(_ context.Context) ([]domain.ToolDefinition, error) {
+	return e.tools, nil
+}
+
+func (e *fakeToolExecutor) ExecuteTool(_ context.Context, toolCallID, name, arguments string) (domain.ToolResult, error) {
+	e.executedName = name
+	e.executedArguments = arguments
+	result := e.result
+	result.ToolCallID = toolCallID
+	result.Name = name
+	return result, nil
 }

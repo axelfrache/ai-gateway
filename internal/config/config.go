@@ -58,11 +58,40 @@ type Config struct {
 	OpenRouterBaseURL  string
 	ModelFallbacks     []string
 	ToolModelFallbacks []string
+	MCPServers         []MCPServer
+	MCPAllowedTools    []string
+	MCPDeniedTools     []string
+	MCPProtocolVersion string
+	MCPMaxToolRounds   int
+	MCPToolTimeout     time.Duration
 	RequestTimeout     time.Duration
+}
+
+type MCPServer struct {
+	Name        string
+	URL         string
+	BearerToken string
 }
 
 func FromEnv() (Config, error) {
 	timeoutSeconds, err := intFromEnv("REQUEST_TIMEOUT_SECONDS", 45)
+	if err != nil {
+		return Config{}, err
+	}
+	mcpMaxToolRounds, err := intFromEnv("MCP_MAX_TOOL_ROUNDS", 4)
+	if err != nil {
+		return Config{}, err
+	}
+	mcpToolTimeoutSeconds, err := intFromEnv("MCP_TOOL_TIMEOUT_SECONDS", 20)
+	if err != nil {
+		return Config{}, err
+	}
+
+	mcpBearerTokens, err := pairsFromEnv("MCP_BEARER_TOKENS")
+	if err != nil {
+		return Config{}, err
+	}
+	mcpServers, err := mcpServersFromEnv("MCP_SERVERS", mcpBearerTokens)
 	if err != nil {
 		return Config{}, err
 	}
@@ -83,6 +112,12 @@ func FromEnv() (Config, error) {
 		),
 		ModelFallbacks:     csvFromEnv("MODEL_FALLBACKS", csvFromEnv("GEMINI_MODEL_FALLBACKS", defaultModelFallbacks)),
 		ToolModelFallbacks: csvFromEnv("TOOL_MODEL_FALLBACKS", defaultToolModelFallbacks),
+		MCPServers:         mcpServers,
+		MCPAllowedTools:    csvFromEnv("MCP_ALLOWED_TOOLS", nil),
+		MCPDeniedTools:     csvFromEnv("MCP_DENIED_TOOLS", nil),
+		MCPProtocolVersion: stringFromEnv("MCP_PROTOCOL_VERSION", "2025-11-25"),
+		MCPMaxToolRounds:   mcpMaxToolRounds,
+		MCPToolTimeout:     time.Duration(mcpToolTimeoutSeconds) * time.Second,
 		RequestTimeout:     time.Duration(timeoutSeconds) * time.Second,
 	}
 
@@ -134,4 +169,43 @@ func csvFromEnv(key string, fallback []string) []string {
 		return append([]string(nil), fallback...)
 	}
 	return result
+}
+
+func pairsFromEnv(key string) (map[string]string, error) {
+	pairs := map[string]string{}
+	for _, entry := range csvFromEnv(key, nil) {
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			return nil, errors.New(key + " entries must use name=value")
+		}
+		name = strings.TrimSpace(name)
+		value = strings.TrimSpace(value)
+		if name == "" || value == "" {
+			return nil, errors.New(key + " entries must use non-empty name=value")
+		}
+		pairs[name] = value
+	}
+	return pairs, nil
+}
+
+func mcpServersFromEnv(key string, bearerTokens map[string]string) ([]MCPServer, error) {
+	entries := csvFromEnv(key, nil)
+	servers := make([]MCPServer, 0, len(entries))
+	for _, entry := range entries {
+		name, url, ok := strings.Cut(entry, "=")
+		if !ok {
+			return nil, errors.New(key + " entries must use name=url")
+		}
+		name = strings.TrimSpace(name)
+		url = strings.TrimSpace(url)
+		if name == "" || url == "" {
+			return nil, errors.New(key + " entries must use non-empty name=url")
+		}
+		servers = append(servers, MCPServer{
+			Name:        name,
+			URL:         strings.TrimRight(url, "/"),
+			BearerToken: bearerTokens[name],
+		})
+	}
+	return servers, nil
 }

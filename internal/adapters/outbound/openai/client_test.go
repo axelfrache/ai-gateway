@@ -124,6 +124,14 @@ func TestMistralClientMapsRequiredToolChoiceToAny(t *testing.T) {
 	}
 }
 
+func TestClassifyErrorTreatsTokenLimitAsFallbackable(t *testing.T) {
+	err := classifyError("Groq", http.StatusBadRequest, []byte(`{"error":{"message":"This model's maximum context length was exceeded"}}`))
+
+	if domain.Kind(err) != domain.ErrorKindModelUnavailable {
+		t.Fatalf("expected model unavailable error, got %q", domain.Kind(err))
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {

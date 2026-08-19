@@ -348,6 +348,8 @@ func classifyError(provider string, statusCode int, body []byte) error {
 		return domain.NewError(domain.ErrorKindAuth, statusCode, message, nil)
 	case statusCode == http.StatusNotFound:
 		return domain.NewError(domain.ErrorKindModelUnavailable, statusCode, message, nil)
+	case statusCode == http.StatusBadRequest && tokenLimitError(message):
+		return domain.NewError(domain.ErrorKindModelUnavailable, statusCode, message, nil)
 	case statusCode == http.StatusBadRequest:
 		return domain.NewError(domain.ErrorKindInvalidRequest, statusCode, message, nil)
 	case statusCode >= 500:
@@ -355,4 +357,25 @@ func classifyError(provider string, statusCode int, body []byte) error {
 	default:
 		return domain.NewError(domain.ErrorKindUnknown, statusCode, message, nil)
 	}
+}
+
+func tokenLimitError(message string) bool {
+	normalized := strings.ToLower(message)
+	patterns := []string{
+		"context length",
+		"context limit",
+		"context window",
+		"maximum context",
+		"max context",
+		"too many tokens",
+		"token limit",
+		"tokens exceed",
+		"exceeds the maximum",
+	}
+	for _, pattern := range patterns {
+		if strings.Contains(normalized, pattern) {
+			return true
+		}
+	}
+	return false
 }

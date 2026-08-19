@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"encoding/json"
+	"net/http"
 	"testing"
 
 	"github.com/frachea/ai-gateway/internal/domain"
@@ -89,5 +90,13 @@ func TestContentsFromMessagesMapsToolResults(t *testing.T) {
 	}
 	if last.Parts[0].FunctionResponse.Name != "get_status" {
 		t.Fatalf("unexpected function response name: %q", last.Parts[0].FunctionResponse.Name)
+	}
+}
+
+func TestClassifyGeminiErrorTreatsTokenLimitAsFallbackable(t *testing.T) {
+	err := classifyGeminiError(http.StatusBadRequest, []byte(`{"error":{"code":400,"message":"Input exceeds the maximum token limit","status":"INVALID_ARGUMENT"}}`))
+
+	if domain.Kind(err) != domain.ErrorKindModelUnavailable {
+		t.Fatalf("expected model unavailable error, got %q", domain.Kind(err))
 	}
 }

@@ -47,6 +47,19 @@ type ChatResponse struct {
 	FinishReason string
 }
 
+type ToolDefinition struct {
+	Name        string
+	Description string
+	Parameters  json.RawMessage
+}
+
+type ToolResult struct {
+	ToolCallID string
+	Name       string
+	Content    string
+	IsError    bool
+}
+
 type Attempt struct {
 	Model         string `json:"model"`
 	Status        string `json:"status"`
@@ -92,6 +105,11 @@ type AIProvider interface {
 
 type ChatProvider interface {
 	Chat(ctx context.Context, model string, req ChatRequest) (ChatResponse, error)
+}
+
+type ToolExecutor interface {
+	ListTools(ctx context.Context) ([]ToolDefinition, error)
+	ExecuteTool(ctx context.Context, toolCallID, name, arguments string) (ToolResult, error)
 }
 
 type ErrorKind string

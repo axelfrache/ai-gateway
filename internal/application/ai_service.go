@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -11,9 +12,11 @@ import (
 )
 
 type AIService struct {
-	provider   domain.AIProvider
-	models     []string
-	toolModels []string
+	provider      domain.AIProvider
+	models        []string
+	toolModels    []string
+	toolExecutor  domain.ToolExecutor
+	maxToolRounds int
 }
 
 func NewAIService(provider domain.AIProvider, models []string, toolModels ...[]string) (*AIService, error) {
@@ -48,10 +51,18 @@ func NewAIService(provider domain.AIProvider, models []string, toolModels ...[]s
 	}
 
 	return &AIService{
-		provider:   provider,
-		models:     normalized,
-		toolModels: normalizedToolModels,
+		provider:      provider,
+		models:        normalized,
+		toolModels:    normalizedToolModels,
+		maxToolRounds: 4,
 	}, nil
+}
+
+func (s *AIService) SetToolExecutor(executor domain.ToolExecutor, maxToolRounds int) {
+	s.toolExecutor = executor
+	if maxToolRounds > 0 {
+		s.maxToolRounds = maxToolRounds
+	}
 }
 
 func (s *AIService) Generate(ctx context.Context, req domain.GenerateRequest) (domain.GenerateResult, error) {
@@ -114,6 +125,78 @@ func (s *AIService) Chat(ctx context.Context, req domain.ChatRequest) (domain.Ch
 		return domain.ChatResult{}, domain.NewError(domain.ErrorKindInvalidRequest, 0, "response_schema must be a JSON object", nil)
 	}
 
+	if s.toolExecutor == nil {
+		return s.chatOnce(ctx, req)
+	}
+
+	current := req
+	current.Messages = append([]domain.ChatMessage(nil), req.Messages...)
+	allAttempts := []domain.Attempt{}
+	fallbackUsed := false
+
+	for round := 0; round <= s.maxToolRounds; round++ {
+		tools, err := s.toolExecutor.ListTools(ctx)
+		if err != nil {
+			return domain.ChatResult{Attempts: allAttempts}, domain.NewError(domain.ErrorKindTemporary, 0, "failed to list MCP tools", err)
+		}
+		current.Tools, err = mergeTools(current.Tools, tools)
+		if err != nil {
+			return domain.ChatResult{Attempts: allAttempts}, err
+		}
+
+		result, err := s.chatOnce(ctx, current)
+		allAttempts = append(allAttempts, result.Attempts...)
+		if result.FallbackUsed || len(result.Attempts) > 1 {
+			fallbackUsed = true
+		}
+		if err != nil {
+			result.Attempts = allAttempts
+			result.FallbackUsed = fallbackUsed
+			return result, err
+		}
+
+		calls, err := toolCallsFromMessage(result.Message)
+		if err != nil {
+			result.Attempts = allAttempts
+			result.FallbackUsed = fallbackUsed
+			return result, err
+		}
+		executable := executableToolCalls(tools, calls)
+		if len(executable) == 0 {
+			result.Attempts = allAttempts
+			result.FallbackUsed = fallbackUsed
+			return result, nil
+		}
+		if len(executable) != len(calls) {
+			result.Attempts = allAttempts
+			result.FallbackUsed = fallbackUsed
+			return result, nil
+		}
+		if round == s.maxToolRounds {
+			result.Attempts = allAttempts
+			result.FallbackUsed = fallbackUsed
+			return result, domain.NewError(domain.ErrorKindTemporary, 0, "maximum tool call rounds exceeded", nil)
+		}
+
+		current.Messages = append(current.Messages, result.Message)
+		for _, call := range executable {
+			toolResult, err := s.toolExecutor.ExecuteTool(ctx, call.ID, call.Function.Name, call.Function.Arguments)
+			if err != nil {
+				return domain.ChatResult{Attempts: allAttempts}, domain.NewError(domain.ErrorKindTemporary, 0, "failed to execute MCP tool "+call.Function.Name, err)
+			}
+			current.Messages = append(current.Messages, domain.ChatMessage{
+				Role:       "tool",
+				ToolCallID: toolResult.ToolCallID,
+				Name:       toolResult.Name,
+				Content:    mustMarshalString(toolResult.Content),
+			})
+		}
+	}
+
+	return domain.ChatResult{Attempts: allAttempts, FallbackUsed: fallbackUsed}, domain.NoModelAvailable(len(allAttempts))
+}
+
+func (s *AIService) chatOnce(ctx context.Context, req domain.ChatRequest) (domain.ChatResult, error) {
 	models, err := s.chatModelsFor(req)
 	if err != nil {
 		return domain.ChatResult{}, err
@@ -306,6 +389,125 @@ func rawJSONHasValue(raw json.RawMessage) bool {
 
 func rawJSONEquals(raw json.RawMessage, value string) bool {
 	return strings.TrimSpace(string(raw)) == value
+}
+
+type chatToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+func mergeTools(raw json.RawMessage, tools []domain.ToolDefinition) (json.RawMessage, error) {
+	var values []json.RawMessage
+	if rawJSONHasValue(raw) {
+		if err := json.Unmarshal(raw, &values); err != nil {
+			return nil, domain.NewError(domain.ErrorKindInvalidRequest, 0, "tools must be a JSON array", err)
+		}
+	}
+
+	seen := map[string]struct{}{}
+	for _, rawTool := range values {
+		name, err := openAIToolName(rawTool)
+		if err != nil {
+			return nil, err
+		}
+		if name != "" {
+			seen[name] = struct{}{}
+		}
+	}
+
+	for _, tool := range tools {
+		name := strings.TrimSpace(tool.Name)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		parameters := tool.Parameters
+		if !rawJSONHasValue(parameters) {
+			parameters = json.RawMessage(`{"type":"object","properties":{}}`)
+		}
+		rawTool, err := json.Marshal(map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        name,
+				"description": tool.Description,
+				"parameters":  json.RawMessage(parameters),
+			},
+		})
+		if err != nil {
+			return nil, domain.NewError(domain.ErrorKindInvalidRequest, 0, "failed to encode MCP tool", err)
+		}
+		values = append(values, rawTool)
+		seen[name] = struct{}{}
+	}
+
+	if len(values) == 0 {
+		return nil, nil
+	}
+	merged, err := json.Marshal(values)
+	if err != nil {
+		return nil, domain.NewError(domain.ErrorKindInvalidRequest, 0, "failed to encode tools", err)
+	}
+	return merged, nil
+}
+
+func openAIToolName(raw json.RawMessage) (string, error) {
+	var tool struct {
+		Type     string `json:"type"`
+		Function struct {
+			Name string `json:"name"`
+		} `json:"function"`
+	}
+	if err := json.Unmarshal(raw, &tool); err != nil {
+		return "", domain.NewError(domain.ErrorKindInvalidRequest, 0, "tools must contain JSON objects", err)
+	}
+	if tool.Type != "function" {
+		return "", nil
+	}
+	return strings.TrimSpace(tool.Function.Name), nil
+}
+
+func toolCallsFromMessage(message domain.ChatMessage) ([]chatToolCall, error) {
+	if !rawJSONHasValue(message.ToolCalls) {
+		return nil, nil
+	}
+	var calls []chatToolCall
+	if err := json.Unmarshal(message.ToolCalls, &calls); err != nil {
+		return nil, domain.NewError(domain.ErrorKindTemporary, 0, "model returned invalid tool calls", err)
+	}
+	for i := range calls {
+		if strings.TrimSpace(calls[i].ID) == "" {
+			calls[i].ID = fmt.Sprintf("call_%d", i)
+		}
+	}
+	return calls, nil
+}
+
+func executableToolCalls(tools []domain.ToolDefinition, calls []chatToolCall) []chatToolCall {
+	available := map[string]struct{}{}
+	for _, tool := range tools {
+		available[tool.Name] = struct{}{}
+	}
+	result := make([]chatToolCall, 0, len(calls))
+	for _, call := range calls {
+		if _, ok := available[call.Function.Name]; ok {
+			result = append(result, call)
+		}
+	}
+	return result
+}
+
+func mustMarshalString(value string) json.RawMessage {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return json.RawMessage(`""`)
+	}
+	return encoded
 }
 
 func splitModel(candidate string) (string, string) {

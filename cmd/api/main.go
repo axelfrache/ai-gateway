@@ -11,6 +11,7 @@ import (
 
 	"github.com/frachea/ai-gateway/internal/adapters/inbound/httpapi"
 	"github.com/frachea/ai-gateway/internal/adapters/outbound/gemini"
+	"github.com/frachea/ai-gateway/internal/adapters/outbound/mcp"
 	"github.com/frachea/ai-gateway/internal/adapters/outbound/openai"
 	"github.com/frachea/ai-gateway/internal/adapters/outbound/router"
 	"github.com/frachea/ai-gateway/internal/application"
@@ -51,6 +52,24 @@ func main() {
 	if err != nil {
 		log.Fatalf("create AI service: %v", err)
 	}
+	if len(cfg.MCPServers) > 0 {
+		servers := make([]mcp.ServerConfig, 0, len(cfg.MCPServers))
+		for _, server := range cfg.MCPServers {
+			servers = append(servers, mcp.ServerConfig{
+				Name:        server.Name,
+				URL:         server.URL,
+				BearerToken: server.BearerToken,
+			})
+		}
+		registry := mcp.NewRegistry(
+			servers,
+			cfg.MCPProtocolVersion,
+			cfg.MCPToolTimeout,
+			cfg.MCPAllowedTools,
+			cfg.MCPDeniedTools,
+		)
+		aiService.SetToolExecutor(registry, cfg.MCPMaxToolRounds)
+	}
 
 	server := &http.Server{
 		Addr:         cfg.ServerAddr,
@@ -64,7 +83,7 @@ func main() {
 	defer stop()
 
 	go func() {
-		logr.Info("starting API", "addr", cfg.ServerAddr, "models", modelFallbacks, "tool_models", toolModelFallbacks)
+		logr.Info("starting API", "addr", cfg.ServerAddr, "models", modelFallbacks, "tool_models", toolModelFallbacks, "mcp_servers", len(cfg.MCPServers))
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("serve: %v", err)
 		}

@@ -25,6 +25,7 @@ It is designed for structured JSON responses, free-tier-friendly routing, and a 
 | `internal/adapters/inbound/httpapi` | REST API |
 | `internal/adapters/outbound/gemini` | Gemini adapter |
 | `internal/adapters/outbound/openai` | OpenAI-compatible adapter for Groq, Mistral, and OpenRouter |
+| `internal/adapters/outbound/mcp` | MCP Streamable HTTP tool client |
 | `internal/adapters/outbound/router` | `provider:model` routing |
 | `internal/config` | Environment loading and configuration |
 
@@ -58,7 +59,20 @@ openrouter:google/gemma-4-26b-a4b-it:free
 openrouter:openai/gpt-oss-20b:free
 ```
 
-Tool execution is still performed by the caller or by a future gateway tool runner. The gateway preserves tool state and can fall back between compatible models across follow-up calls that include prior `tool_calls` and `tool` results.
+When `MCP_SERVERS` is configured, AI Gateway lists tools from each MCP server, injects them into chat completion requests, executes selected tool calls, appends tool results, and calls the model again until a final assistant response is produced.
+
+MCP tools are exposed as `server__tool_name`. For example, a Kubernetes MCP server named `kube` with a `get-pods` tool becomes `kube__get_pods`.
+
+```env
+MCP_SERVERS=kube=http://kube-mcp.ai.svc.cluster.local/mcp
+MCP_BEARER_TOKENS=kube=optional-token
+MCP_ALLOWED_TOOLS=kube__get*,kube__describe*
+MCP_DENIED_TOOLS=kube__get_secret*
+MCP_MAX_TOOL_ROUNDS=4
+MCP_TOOL_TIMEOUT_SECONDS=20
+```
+
+AI Gateway currently supports MCP Streamable HTTP JSON-RPC endpoints.
 
 ## Getting Started
 
@@ -221,6 +235,13 @@ curl -s http://localhost:8080/api/generate \
 | `GATEWAY_API_KEYS` | Comma-separated API keys allowed to call protected endpoints |
 | `MODEL_FALLBACKS` | Ordered fallback chain using `provider:model` |
 | `TOOL_MODEL_FALLBACKS` | Ordered fallback chain for chat completion requests that include tools |
+| `MCP_SERVERS` | Comma-separated MCP servers using `name=url`; empty disables gateway-side MCP tools |
+| `MCP_BEARER_TOKENS` | Optional comma-separated MCP bearer tokens using `name=token` |
+| `MCP_ALLOWED_TOOLS` | Optional allow list for exposed MCP tools; supports exact names, prefix `*`, and suffix `*` |
+| `MCP_DENIED_TOOLS` | Optional deny list applied before the allow list |
+| `MCP_PROTOCOL_VERSION` | MCP protocol version sent during initialization |
+| `MCP_MAX_TOOL_ROUNDS` | Maximum assistant-tool loops per chat request |
+| `MCP_TOOL_TIMEOUT_SECONDS` | Timeout per MCP HTTP request |
 
 ## Code Quality
 
