@@ -25,33 +25,22 @@ func TestFunctionDeclarationsFromTools(t *testing.T) {
 }
 
 func TestGenerateContentResponseReturnsToolCalls(t *testing.T) {
-	response := generateContentResponse{
-		Candidates: []struct {
-			Content struct {
-				Parts []struct {
-					Text         string        `json:"text"`
-					FunctionCall *functionCall `json:"functionCall"`
-				} `json:"parts"`
-			} `json:"content"`
-			FinishReason string `json:"finishReason"`
-		}{
-			{
-				FinishReason: "STOP",
-				Content: struct {
-					Parts []struct {
-						Text         string        `json:"text"`
-						FunctionCall *functionCall `json:"functionCall"`
-					} `json:"parts"`
-				}{
-					Parts: []struct {
-						Text         string        `json:"text"`
-						FunctionCall *functionCall `json:"functionCall"`
-					}{
-						{FunctionCall: &functionCall{Name: "get_status", Args: json.RawMessage(`{"namespace":"ai"}`)}},
-					},
-				},
-			},
-		},
+	var response generateContentResponse
+	body := `{
+		"candidates": [{
+			"finishReason": "STOP",
+			"content": {
+				"parts": [
+					{
+						"functionCall": {"name": "get_status", "args": {"namespace": "ai"}},
+						"thoughtSignature": "sig-abc"
+					}
+				]
+			}
+		}]
+	}`
+	if err := json.Unmarshal([]byte(body), &response); err != nil {
+		t.Fatal(err)
 	}
 
 	message, finishReason, err := response.ChatMessage()
@@ -64,6 +53,14 @@ func TestGenerateContentResponseReturnsToolCalls(t *testing.T) {
 	}
 	if len(message.ToolCalls) == 0 {
 		t.Fatal("expected tool calls")
+	}
+
+	var calls []openAIToolCall
+	if err := json.Unmarshal(message.ToolCalls, &calls); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 || calls[0].ThoughtSignature != "sig-abc" {
+		t.Fatalf("expected thought signature to be captured, got %#v", calls)
 	}
 }
 
@@ -90,6 +87,34 @@ func TestContentsFromMessagesMapsToolResults(t *testing.T) {
 	}
 	if last.Parts[0].FunctionResponse.Name != "get_status" {
 		t.Fatalf("unexpected function response name: %q", last.Parts[0].FunctionResponse.Name)
+	}
+}
+
+func TestContentsFromMessagesReplaysThoughtSignature(t *testing.T) {
+	contents, _, err := contentsFromMessages([]domain.ChatMessage{
+		{Role: "user", Content: json.RawMessage(`"status?"`)},
+		{
+			Role:      "assistant",
+			Content:   json.RawMessage("null"),
+			ToolCalls: json.RawMessage(`[{"id":"call_1","type":"function","function":{"name":"get_status","arguments":"{}"},"thought_signature":"sig-abc"},{"id":"call_2","type":"function","function":{"name":"get_other","arguments":"{}"}}]`),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(contents) != 2 {
+		t.Fatalf("expected 2 contents, got %d", len(contents))
+	}
+	model := contents[1]
+	if len(model.Parts) != 2 {
+		t.Fatalf("expected 2 function call parts, got %#v", model.Parts)
+	}
+	if model.Parts[0].ThoughtSignature != "sig-abc" {
+		t.Fatalf("expected real thought signature to be replayed, got %q", model.Parts[0].ThoughtSignature)
+	}
+	if model.Parts[1].ThoughtSignature != "skip_thought_signature_validator" {
+		t.Fatalf("expected placeholder thought signature for unsigned call, got %q", model.Parts[1].ThoughtSignature)
 	}
 }
 

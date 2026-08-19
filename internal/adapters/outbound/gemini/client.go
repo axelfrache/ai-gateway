@@ -241,6 +241,7 @@ type part struct {
 	Text             string            `json:"text,omitempty"`
 	FunctionCall     *functionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *functionResponse `json:"functionResponse,omitempty"`
+	ThoughtSignature string            `json:"thoughtSignature,omitempty"`
 }
 
 type generationConfig struct {
@@ -283,8 +284,9 @@ type generateContentResponse struct {
 	Candidates []struct {
 		Content struct {
 			Parts []struct {
-				Text         string        `json:"text"`
-				FunctionCall *functionCall `json:"functionCall"`
+				Text             string        `json:"text"`
+				FunctionCall     *functionCall `json:"functionCall"`
+				ThoughtSignature string        `json:"thoughtSignature"`
 			} `json:"parts"`
 		} `json:"content"`
 		FinishReason string `json:"finishReason"`
@@ -343,6 +345,7 @@ func (r generateContentResponse) ChatMessage() (domain.ChatMessage, string, erro
 						Name:      part.FunctionCall.Name,
 						Arguments: arguments,
 					},
+					ThoughtSignature: part.ThoughtSignature,
 				})
 			}
 		}
@@ -387,9 +390,10 @@ type openAITool struct {
 }
 
 type openAIToolCall struct {
-	ID       string             `json:"id,omitempty"`
-	Type     string             `json:"type"`
-	Function openAIFunctionCall `json:"function"`
+	ID               string             `json:"id,omitempty"`
+	Type             string             `json:"type"`
+	Function         openAIFunctionCall `json:"function"`
+	ThoughtSignature string             `json:"thought_signature,omitempty"`
 }
 
 type openAIFunctionCall struct {
@@ -432,7 +436,19 @@ func contentsFromMessages(messages []domain.ChatMessage) ([]content, string, err
 				if err != nil {
 					return nil, "", err
 				}
-				item.Parts = append(item.Parts, part{FunctionCall: &functionCall{Name: call.Function.Name, Args: args}})
+				signature := strings.TrimSpace(call.ThoughtSignature)
+				if signature == "" {
+					// Gemini requires every replayed functionCall part to carry a
+					// thoughtSignature. Calls that didn't originate from Gemini (a
+					// different fallback provider, a client-injected tool call, or a
+					// parallel call Gemini itself left unsigned) get this documented
+					// placeholder instead of a real one.
+					signature = "skip_thought_signature_validator"
+				}
+				item.Parts = append(item.Parts, part{
+					FunctionCall:     &functionCall{Name: call.Function.Name, Args: args},
+					ThoughtSignature: signature,
+				})
 				if strings.TrimSpace(call.ID) != "" {
 					toolCallNames[call.ID] = call.Function.Name
 				}
