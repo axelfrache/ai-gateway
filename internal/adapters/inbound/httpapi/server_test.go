@@ -555,7 +555,7 @@ func TestChatCompletionsEndpointStreamsSingleChunk(t *testing.T) {
 	}
 }
 
-func TestChatCompletionsEndpointRejectsTools(t *testing.T) {
+func TestChatCompletionsEndpointAcceptsUnusedTools(t *testing.T) {
 	service, err := application.NewAIService(fakeProvider{}, []string{"gemini:gemini-3.6-flash"})
 	if err != nil {
 		t.Fatal(err)
@@ -569,6 +569,38 @@ func TestChatCompletionsEndpointRejectsTools(t *testing.T) {
 		"tools": []map[string]any{
 			{"type": "function"},
 		},
+		"tool_choice": "auto",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestChatCompletionsEndpointRejectsRequiredToolChoice(t *testing.T) {
+	service, err := application.NewAIService(fakeProvider{}, []string{"gemini:gemini-3.6-flash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(service, slog.New(slog.DiscardHandler), []string{"test-key"}).Routes()
+
+	body, err := json.Marshal(map[string]any{
+		"messages": []map[string]any{
+			{"role": "user", "content": "hello"},
+		},
+		"tools": []map[string]any{
+			{"type": "function"},
+		},
+		"tool_choice": "required",
 	})
 	if err != nil {
 		t.Fatal(err)

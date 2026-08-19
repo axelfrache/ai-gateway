@@ -199,10 +199,6 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if rawJSONArrayHasValues(payload.Tools) {
-		writeError(w, http.StatusBadRequest, "tools are not supported", nil)
-		return
-	}
 	if rawJSONHasValue(payload.ToolChoice) && !rawJSONEqualsString(payload.ToolChoice, "none") && !rawJSONEqualsString(payload.ToolChoice, "auto") {
 		writeError(w, http.StatusBadRequest, "tools are not supported", nil)
 		return
@@ -569,17 +565,6 @@ func chatCompletionID() string {
 func rawJSONHasValue(raw json.RawMessage) bool {
 	trimmed := strings.TrimSpace(string(raw))
 	return trimmed != "" && trimmed != "null"
-}
-
-func rawJSONArrayHasValues(raw json.RawMessage) bool {
-	if !rawJSONHasValue(raw) {
-		return false
-	}
-	var values []any
-	if err := json.Unmarshal(raw, &values); err != nil {
-		return true
-	}
-	return len(values) > 0
 }
 
 func rawJSONEqualsString(raw json.RawMessage, expected string) bool {
