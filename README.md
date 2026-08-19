@@ -66,6 +66,7 @@ Then go to:
 - Health check: http://localhost:8080/healthz
 - Generate API: http://localhost:8080/v1/generate
 - Models API: http://localhost:8080/v1/models
+- OpenAI-compatible chat API: http://localhost:8080/v1/chat/completions
 - Ollama-compatible generate API: http://localhost:8080/api/generate
 - Ollama-compatible models API: http://localhost:8080/api/tags
 
@@ -124,6 +125,34 @@ curl -s http://localhost:8080/v1/models/check \
   -H 'Authorization: Bearer change-me' \
   -d '{"models":["gemini:gemini-3.6-flash"]}'
 ```
+
+## OpenAI-Compatible API
+
+Use `/v1/chat/completions` with OpenAI-compatible clients and WebUIs:
+
+```bash
+curl -s http://localhost:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer change-me' \
+  -d '{
+    "model": "gemini:gemini-3.6-flash",
+    "messages": [
+      { "role": "system", "content": "Answer in English." },
+      { "role": "user", "content": "Explain dependency injection in Go in 3 lines." }
+    ],
+    "temperature": 0.3,
+    "max_tokens": 256
+  }'
+```
+
+For Open WebUI, configure an OpenAI-compatible connection:
+
+```env
+OPENAI_API_BASE_URL=http://ai-gateway.ai-gateway.svc.cluster.local:8080/v1
+OPENAI_API_KEY=change-me
+```
+
+`stream: true` is accepted and returned as a single server-sent event chunk. Tool calling is rejected because gateway tool execution is not implemented yet.
 
 ## Ollama-Compatible API
 

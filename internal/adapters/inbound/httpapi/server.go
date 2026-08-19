@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -37,6 +38,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /v1/models", s.requireAuth(http.HandlerFunc(s.models)))
 	mux.Handle("POST /v1/models/check", s.requireAuth(http.HandlerFunc(s.checkModels)))
 	mux.Handle("POST /v1/generate", s.requireAuth(http.HandlerFunc(s.generate)))
+	mux.Handle("POST /v1/chat/completions", s.requireAuth(http.HandlerFunc(s.chatCompletions)))
 	return requestLogger(s.logger, mux)
 }
 
@@ -72,8 +74,25 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) models(w http.ResponseWriter, _ *http.Request) {
+	models := s.service.Models()
+	data := make([]openAIModel, 0, len(models))
+	for _, model := range models {
+		owner := model.Provider
+		if owner == "" {
+			owner = "ai-gateway"
+		}
+		data = append(data, openAIModel{
+			ID:      model.Name,
+			Object:  "model",
+			Created: 0,
+			OwnedBy: owner,
+		})
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"models": s.service.Models(),
+		"object": "list",
+		"data":   data,
+		"models": models,
 	})
 }
 
@@ -171,6 +190,63 @@ func (s *Server) ollamaGenerate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+
+	var payload chatCompletionRequest
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body", nil)
+		return
+	}
+
+	if rawJSONArrayHasValues(payload.Tools) {
+		writeError(w, http.StatusBadRequest, "tools are not supported", nil)
+		return
+	}
+	if rawJSONHasValue(payload.ToolChoice) && !rawJSONEqualsString(payload.ToolChoice, "none") && !rawJSONEqualsString(payload.ToolChoice, "auto") {
+		writeError(w, http.StatusBadRequest, "tools are not supported", nil)
+		return
+	}
+
+	system, prompt, err := chatMessagesToPrompt(payload.Messages)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), nil)
+		return
+	}
+
+	responseSchema, err := openAIResponseFormatToSchema(payload.ResponseFormat)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), nil)
+		return
+	}
+
+	maxOutputTokens := payload.MaxTokens
+	if maxOutputTokens == nil {
+		maxOutputTokens = payload.MaxCompletionTokens
+	}
+
+	result, err := s.service.Generate(r.Context(), domain.GenerateRequest{
+		Prompt:          prompt,
+		System:          system,
+		Model:           payload.Model,
+		Temperature:     payload.Temperature,
+		MaxOutputTokens: maxOutputTokens,
+		ResponseSchema:  responseSchema,
+	})
+	if err != nil {
+		statusCode := statusCodeFor(err)
+		writeError(w, statusCode, err.Error(), result.Attempts)
+		return
+	}
+
+	if payload.Stream {
+		writeChatCompletionStream(w, result)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, newChatCompletionResponse(result))
+}
+
 type generateRequest struct {
 	Prompt          string          `json:"prompt"`
 	System          string          `json:"system,omitempty"`
@@ -183,6 +259,62 @@ type generateRequest struct {
 
 type checkModelsRequest struct {
 	Models []string `json:"models,omitempty"`
+}
+
+type openAIModel struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	OwnedBy string `json:"owned_by"`
+}
+
+type chatCompletionRequest struct {
+	Model               string          `json:"model,omitempty"`
+	Messages            []chatMessage   `json:"messages"`
+	Temperature         *float64        `json:"temperature,omitempty"`
+	MaxTokens           *int            `json:"max_tokens,omitempty"`
+	MaxCompletionTokens *int            `json:"max_completion_tokens,omitempty"`
+	Stream              bool            `json:"stream,omitempty"`
+	ResponseFormat      json.RawMessage `json:"response_format,omitempty"`
+	Tools               json.RawMessage `json:"tools,omitempty"`
+	ToolChoice          json.RawMessage `json:"tool_choice,omitempty"`
+}
+
+type chatMessage struct {
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
+}
+
+type chatCompletionResponse struct {
+	ID      string                 `json:"id"`
+	Object  string                 `json:"object"`
+	Created int64                  `json:"created"`
+	Model   string                 `json:"model"`
+	Choices []chatCompletionChoice `json:"choices"`
+	Usage   chatCompletionUsage    `json:"usage"`
+}
+
+type chatCompletionChoice struct {
+	Index        int                    `json:"index"`
+	Message      *chatCompletionMessage `json:"message,omitempty"`
+	Delta        *chatCompletionDelta   `json:"delta,omitempty"`
+	FinishReason *string                `json:"finish_reason"`
+}
+
+type chatCompletionMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type chatCompletionDelta struct {
+	Role    string `json:"role,omitempty"`
+	Content string `json:"content,omitempty"`
+}
+
+type chatCompletionUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 }
 
 type ollamaGenerateRequest struct {
@@ -250,6 +382,212 @@ func ollamaFormatToSchema(format json.RawMessage) (json.RawMessage, error) {
 	default:
 		return nil, errors.New("format must be json or a JSON schema object")
 	}
+}
+
+func chatMessagesToPrompt(messages []chatMessage) (string, string, error) {
+	if len(messages) == 0 {
+		return "", "", errors.New("messages is required")
+	}
+
+	systemParts := []string{}
+	promptParts := []string{}
+	for _, message := range messages {
+		role := strings.TrimSpace(strings.ToLower(message.Role))
+		if role == "" {
+			return "", "", errors.New("message role is required")
+		}
+
+		content, err := chatMessageContentText(message.Content)
+		if err != nil {
+			return "", "", err
+		}
+		if strings.TrimSpace(content) == "" {
+			continue
+		}
+
+		switch role {
+		case "system", "developer":
+			systemParts = append(systemParts, content)
+		case "user", "assistant", "tool":
+			promptParts = append(promptParts, role+": "+content)
+		default:
+			return "", "", fmt.Errorf("unsupported message role %q", role)
+		}
+	}
+
+	prompt := strings.TrimSpace(strings.Join(promptParts, "\n\n"))
+	if prompt == "" {
+		return "", "", errors.New("messages must include text content")
+	}
+
+	return strings.TrimSpace(strings.Join(systemParts, "\n\n")), prompt, nil
+}
+
+func chatMessageContentText(raw json.RawMessage) (string, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return "", nil
+	}
+
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text, nil
+	}
+
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return "", errors.New("message content must be a string or text parts")
+	}
+
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part.Type == "text" && strings.TrimSpace(part.Text) != "" {
+			values = append(values, part.Text)
+		}
+	}
+	return strings.TrimSpace(strings.Join(values, "\n")), nil
+}
+
+func openAIResponseFormatToSchema(format json.RawMessage) (json.RawMessage, error) {
+	if len(format) == 0 {
+		return nil, nil
+	}
+
+	var value map[string]json.RawMessage
+	if err := json.Unmarshal(format, &value); err != nil {
+		return nil, errors.New("response_format must be a JSON object")
+	}
+
+	var formatType string
+	if rawJSONHasValue(value["type"]) {
+		if err := json.Unmarshal(value["type"], &formatType); err != nil {
+			return nil, errors.New("response_format.type must be a string")
+		}
+	}
+
+	switch formatType {
+	case "", "text":
+		return nil, nil
+	case "json_object":
+		return json.RawMessage(`{"type":"object"}`), nil
+	case "json_schema":
+		var jsonSchema struct {
+			Schema json.RawMessage `json:"schema"`
+		}
+		if err := json.Unmarshal(value["json_schema"], &jsonSchema); err != nil || len(jsonSchema.Schema) == 0 {
+			return nil, errors.New("response_format.json_schema.schema is required")
+		}
+		return jsonSchema.Schema, nil
+	default:
+		return nil, errors.New("unsupported response_format.type")
+	}
+}
+
+func newChatCompletionResponse(result domain.GenerateResult) chatCompletionResponse {
+	reason := "stop"
+	return chatCompletionResponse{
+		ID:      chatCompletionID(),
+		Object:  "chat.completion",
+		Created: time.Now().Unix(),
+		Model:   result.Model,
+		Choices: []chatCompletionChoice{
+			{
+				Index: 0,
+				Message: &chatCompletionMessage{
+					Role:    "assistant",
+					Content: result.Text,
+				},
+				FinishReason: &reason,
+			},
+		},
+		Usage: chatCompletionUsage{},
+	}
+}
+
+func writeChatCompletionStream(w http.ResponseWriter, result domain.GenerateResult) {
+	id := chatCompletionID()
+	created := time.Now().Unix()
+	reason := "stop"
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	writeSSE(w, map[string]any{
+		"id":      id,
+		"object":  "chat.completion.chunk",
+		"created": created,
+		"model":   result.Model,
+		"choices": []chatCompletionChoice{
+			{
+				Index: 0,
+				Delta: &chatCompletionDelta{
+					Role:    "assistant",
+					Content: result.Text,
+				},
+				FinishReason: nil,
+			},
+		},
+	})
+	writeSSE(w, map[string]any{
+		"id":      id,
+		"object":  "chat.completion.chunk",
+		"created": created,
+		"model":   result.Model,
+		"choices": []chatCompletionChoice{
+			{
+				Index:        0,
+				Delta:        &chatCompletionDelta{},
+				FinishReason: &reason,
+			},
+		},
+	})
+	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func writeSSE(w http.ResponseWriter, value any) {
+	body, err := json.Marshal(value)
+	if err != nil {
+		return
+	}
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", body)
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func chatCompletionID() string {
+	return fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
+}
+
+func rawJSONHasValue(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return trimmed != "" && trimmed != "null"
+}
+
+func rawJSONArrayHasValues(raw json.RawMessage) bool {
+	if !rawJSONHasValue(raw) {
+		return false
+	}
+	var values []any
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return true
+	}
+	return len(values) > 0
+}
+
+func rawJSONEqualsString(raw json.RawMessage, expected string) bool {
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return false
+	}
+	return value == expected
 }
 
 func statusCodeFor(err error) int {
