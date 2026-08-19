@@ -52,6 +52,18 @@ To let those clients opt into a fallback chain the same way they'd pick any othe
 
 They appear alongside real models in `GET /v1/models` and `GET /api/tags`, so any OpenAI- or Ollama-compatible client can select `ai-gateway:auto` (or `:json` / `:tools`) directly from its model picker and get the gateway's full fallback behavior instead of a single pinned model. They work as `model` in `/v1/generate`, `/v1/chat/completions`, and `/api/generate`, and `POST /v1/models/check` expands them to their underlying chain so you can probe availability per real model.
 
+### Model Health
+
+Within a fallback chain, AI Gateway remembers (in memory, per process) which models recently failed with a retryable error, and tries those last on the next request instead of always starting from the top of the chain. A model isn't dropped from the chain — it's just deprioritized for a cooldown window, then eligible again:
+
+| Error kind | Cooldown |
+|------------|----------|
+| Rate limited | 30s |
+| Temporary (5xx, timeout) | 15s |
+| Model unavailable (404, context exceeded) | 2 minutes |
+
+This state resets on restart and isn't shared across replicas.
+
 ## Tool Calling
 
 `/v1/chat/completions` accepts OpenAI-compatible `tools`, `tool_choice`, assistant `tool_calls`, and `tool` result messages. When a request includes tools and no explicit model is set, AI Gateway uses the dedicated tool-capable fallback chain:

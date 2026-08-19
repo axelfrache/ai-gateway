@@ -66,6 +66,37 @@ func TestGenerateFallsBackOnRetryableError(t *testing.T) {
 	}
 }
 
+func TestGenerateReusesLastHealthyModelAcrossRequests(t *testing.T) {
+	provider := fakeProvider{
+		errors: map[string]error{
+			"gemini:gemini-3.6-flash": domain.NewError(domain.ErrorKindRateLimited, 429, "quota exceeded", nil),
+		},
+		responses: map[string]domain.GenerateResponse{
+			"groq:openai/gpt-oss-120b": {Model: "groq:openai/gpt-oss-120b", Text: "ok"},
+		},
+	}
+	service, err := NewAIService(provider, []string{"gemini:gemini-3.6-flash", "groq:openai/gpt-oss-120b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := service.Generate(context.Background(), domain.GenerateRequest{Prompt: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Attempts) != 2 {
+		t.Fatalf("expected first request to try both models, got %#v", first.Attempts)
+	}
+
+	second, err := service.Generate(context.Background(), domain.GenerateRequest{Prompt: "hello again"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Attempts) != 1 || second.Attempts[0].Model != "groq:openai/gpt-oss-120b" {
+		t.Fatalf("expected second request to skip straight to the healthy model, got %#v", second.Attempts)
+	}
+}
+
 func TestGenerateStopsOnNonRetryableError(t *testing.T) {
 	provider := fakeProvider{
 		errors: map[string]error{

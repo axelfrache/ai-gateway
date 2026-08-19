@@ -41,6 +41,7 @@ type AIService struct {
 	jsonModels    []string
 	toolExecutor  domain.ToolExecutor
 	maxToolRounds int
+	health        *modelHealth
 }
 
 // extra optionally carries [toolModels, jsonModels]. Either or both may be
@@ -90,6 +91,7 @@ func NewAIService(provider domain.AIProvider, models []string, extra ...[]string
 		toolModels:    normalizedToolModels,
 		jsonModels:    normalizedJSONModels,
 		maxToolRounds: 4,
+		health:        newModelHealth(),
 	}, nil
 }
 
@@ -140,6 +142,7 @@ func (s *AIService) Generate(ctx context.Context, req domain.GenerateRequest) (d
 	if err != nil {
 		return domain.GenerateResult{}, err
 	}
+	models = s.health.order(models)
 	attempts := make([]domain.Attempt, 0, len(models))
 
 	for _, model := range models {
@@ -148,6 +151,7 @@ func (s *AIService) Generate(ctx context.Context, req domain.GenerateRequest) (d
 		latencyMillis := time.Since(start).Milliseconds()
 
 		if err == nil && strings.TrimSpace(response.Text) != "" {
+			s.health.recordSuccess(model)
 			attempts = append(attempts, domain.Attempt{
 				Model:         model,
 				Status:        "success",
@@ -164,6 +168,7 @@ func (s *AIService) Generate(ctx context.Context, req domain.GenerateRequest) (d
 		if err == nil {
 			err = domain.NewError(domain.ErrorKindTemporary, 0, "model returned an empty response", nil)
 		}
+		s.health.recordFailure(model, domain.Kind(err))
 
 		attempts = append(attempts, domain.Attempt{
 			Model:         model,
@@ -264,6 +269,7 @@ func (s *AIService) chatOnce(ctx context.Context, req domain.ChatRequest) (domai
 	if err != nil {
 		return domain.ChatResult{}, err
 	}
+	models = s.health.order(models)
 	attempts := make([]domain.Attempt, 0, len(models))
 
 	chatProvider, ok := s.provider.(domain.ChatProvider)
@@ -277,6 +283,7 @@ func (s *AIService) chatOnce(ctx context.Context, req domain.ChatRequest) (domai
 		latencyMillis := time.Since(start).Milliseconds()
 
 		if err == nil && chatResponseHasValue(response) {
+			s.health.recordSuccess(model)
 			attempts = append(attempts, domain.Attempt{
 				Model:         model,
 				Status:        "success",
@@ -294,6 +301,7 @@ func (s *AIService) chatOnce(ctx context.Context, req domain.ChatRequest) (domai
 		if err == nil {
 			err = domain.NewError(domain.ErrorKindTemporary, 0, "model returned an empty response", nil)
 		}
+		s.health.recordFailure(model, domain.Kind(err))
 
 		attempts = append(attempts, domain.Attempt{
 			Model:         model,
@@ -384,6 +392,9 @@ func (s *AIService) CheckModels(ctx context.Context, models []string) []domain.M
 		if err != nil {
 			check.Status = "unavailable"
 			check.Error = err.Error()
+			s.health.recordFailure(candidate, domain.Kind(err))
+		} else {
+			s.health.recordSuccess(candidate)
 		}
 		results = append(results, check)
 	}
