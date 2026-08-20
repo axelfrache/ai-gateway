@@ -648,7 +648,7 @@ func normalizeSchema(schema json.RawMessage) (json.RawMessage, error) {
 	if err := json.Unmarshal(schema, &value); err != nil {
 		return nil, err
 	}
-	removeAdditionalProperties(value)
+	removeUnsupportedSchemaKeywords(value)
 
 	normalized, err := json.Marshal(value)
 	if err != nil {
@@ -657,16 +657,17 @@ func normalizeSchema(schema json.RawMessage) (json.RawMessage, error) {
 	return normalized, nil
 }
 
-func removeAdditionalProperties(value any) {
+func removeUnsupportedSchemaKeywords(value any) {
 	switch typed := value.(type) {
 	case map[string]any:
 		delete(typed, "additionalProperties")
+		delete(typed, "$schema")
 		for _, child := range typed {
-			removeAdditionalProperties(child)
+			removeUnsupportedSchemaKeywords(child)
 		}
 	case []any:
 		for _, child := range typed {
-			removeAdditionalProperties(child)
+			removeUnsupportedSchemaKeywords(child)
 		}
 	}
 }

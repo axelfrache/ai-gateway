@@ -24,6 +24,22 @@ func TestFunctionDeclarationsFromTools(t *testing.T) {
 	}
 }
 
+func TestFunctionDeclarationsFromToolsStripsSchemaKeyword(t *testing.T) {
+	tools := json.RawMessage(`[{"type":"function","function":{"name":"pods_list","parameters":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"namespace":{"type":"string"}}}}}]`)
+
+	declarations, err := functionDeclarationsFromTools(tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(declarations) != 1 {
+		t.Fatalf("unexpected declarations: %#v", declarations)
+	}
+	if string(declarations[0].Parameters) != `{"properties":{"namespace":{"type":"string"}},"type":"object"}` {
+		t.Fatalf("expected $schema to be stripped, got %s", declarations[0].Parameters)
+	}
+}
+
 func TestGenerateContentResponseReturnsToolCalls(t *testing.T) {
 	var response generateContentResponse
 	body := `{
