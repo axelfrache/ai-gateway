@@ -643,12 +643,26 @@ func rawJSONHasValue(raw json.RawMessage) bool {
 	return trimmed != "" && trimmed != "null"
 }
 
+var geminiSchemaKeywords = map[string]bool{
+	"type":        true,
+	"format":      true,
+	"description": true,
+	"nullable":    true,
+	"enum":        true,
+	"maxItems":    true,
+	"minItems":    true,
+	"properties":  true,
+	"required":    true,
+	"items":       true,
+	"anyOf":       true,
+}
+
 func normalizeSchema(schema json.RawMessage) (json.RawMessage, error) {
 	var value any
 	if err := json.Unmarshal(schema, &value); err != nil {
 		return nil, err
 	}
-	removeUnsupportedSchemaKeywords(value)
+	sanitizeSchemaForGemini(value)
 
 	normalized, err := json.Marshal(value)
 	if err != nil {
@@ -657,23 +671,35 @@ func normalizeSchema(schema json.RawMessage) (json.RawMessage, error) {
 	return normalized, nil
 }
 
-func removeUnsupportedSchemaKeywords(value any) {
-	switch typed := value.(type) {
-	case map[string]any:
-		delete(typed, "additionalProperties")
-		delete(typed, "$schema")
-		if constValue, ok := typed["const"]; ok {
-			delete(typed, "const")
-			if _, hasEnum := typed["enum"]; !hasEnum {
-				typed["enum"] = []any{constValue}
-			}
+func sanitizeSchemaForGemini(value any) {
+	typed, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+
+	if constValue, ok := typed["const"]; ok {
+		delete(typed, "const")
+		if _, hasEnum := typed["enum"]; !hasEnum {
+			typed["enum"] = []any{constValue}
 		}
-		for _, child := range typed {
-			removeUnsupportedSchemaKeywords(child)
+	}
+	for key := range typed {
+		if !geminiSchemaKeywords[key] {
+			delete(typed, key)
 		}
-	case []any:
-		for _, child := range typed {
-			removeUnsupportedSchemaKeywords(child)
+	}
+
+	if properties, ok := typed["properties"].(map[string]any); ok {
+		for _, propSchema := range properties {
+			sanitizeSchemaForGemini(propSchema)
+		}
+	}
+	if items, ok := typed["items"]; ok {
+		sanitizeSchemaForGemini(items)
+	}
+	if anyOf, ok := typed["anyOf"].([]any); ok {
+		for _, sub := range anyOf {
+			sanitizeSchemaForGemini(sub)
 		}
 	}
 }

@@ -56,6 +56,28 @@ func TestFunctionDeclarationsFromToolsConvertsConstToEnum(t *testing.T) {
 	}
 }
 
+func TestFunctionDeclarationsFromToolsStripsUnknownJSONSchemaKeywords(t *testing.T) {
+	tools := json.RawMessage(`[{"type":"function","function":{"name":"complex_tool","parameters":{
+		"type":"object",
+		"patternProperties":{"^x-":{"type":"string"}},
+		"properties":{
+			"count":{"type":"integer","exclusiveMinimum":0,"minimum":1}
+		}
+	}}}]`)
+
+	declarations, err := functionDeclarationsFromTools(tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(declarations) != 1 {
+		t.Fatalf("unexpected declarations: %#v", declarations)
+	}
+	if string(declarations[0].Parameters) != `{"properties":{"count":{"type":"integer"}},"type":"object"}` {
+		t.Fatalf("expected unrecognized keywords to be stripped, got %s", declarations[0].Parameters)
+	}
+}
+
 func TestGenerateContentResponseReturnsToolCalls(t *testing.T) {
 	var response generateContentResponse
 	body := `{
