@@ -40,6 +40,22 @@ func TestFunctionDeclarationsFromToolsStripsSchemaKeyword(t *testing.T) {
 	}
 }
 
+func TestFunctionDeclarationsFromToolsConvertsConstToEnum(t *testing.T) {
+	tools := json.RawMessage(`[{"type":"function","function":{"name":"set_mode","parameters":{"type":"object","properties":{"mode":{"const":"read-only"}}}}}]`)
+
+	declarations, err := functionDeclarationsFromTools(tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(declarations) != 1 {
+		t.Fatalf("unexpected declarations: %#v", declarations)
+	}
+	if string(declarations[0].Parameters) != `{"properties":{"mode":{"enum":["read-only"]}},"type":"object"}` {
+		t.Fatalf("expected const to be converted to enum, got %s", declarations[0].Parameters)
+	}
+}
+
 func TestGenerateContentResponseReturnsToolCalls(t *testing.T) {
 	var response generateContentResponse
 	body := `{

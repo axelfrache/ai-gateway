@@ -662,6 +662,12 @@ func removeUnsupportedSchemaKeywords(value any) {
 	case map[string]any:
 		delete(typed, "additionalProperties")
 		delete(typed, "$schema")
+		if constValue, ok := typed["const"]; ok {
+			delete(typed, "const")
+			if _, hasEnum := typed["enum"]; !hasEnum {
+				typed["enum"] = []any{constValue}
+			}
+		}
 		for _, child := range typed {
 			removeUnsupportedSchemaKeywords(child)
 		}
