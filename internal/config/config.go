@@ -66,6 +66,7 @@ type Config struct {
 	MCPMaxToolRounds   int
 	MCPToolTimeout     time.Duration
 	RequestTimeout     time.Duration
+	TotalTimeout       time.Duration
 }
 
 type MCPServer struct {
@@ -76,6 +77,12 @@ type MCPServer struct {
 
 func FromEnv() (Config, error) {
 	timeoutSeconds, err := intFromEnv("REQUEST_TIMEOUT_SECONDS", 45)
+	if err != nil {
+		return Config{}, err
+	}
+	// The whole request, fallback chain included — REQUEST_TIMEOUT_SECONDS only bounds
+	// one attempt, so without this the worst case is that timeout times the chain length.
+	totalSeconds, err := intFromEnv("TOTAL_TIMEOUT_SECONDS", 120)
 	if err != nil {
 		return Config{}, err
 	}
@@ -121,6 +128,7 @@ func FromEnv() (Config, error) {
 		MCPMaxToolRounds:   mcpMaxToolRounds,
 		MCPToolTimeout:     time.Duration(mcpToolTimeoutSeconds) * time.Second,
 		RequestTimeout:     time.Duration(timeoutSeconds) * time.Second,
+		TotalTimeout:       totalTimeout(timeoutSeconds, totalSeconds),
 	}
 
 	if cfg.GeminiAPIKey == "" && cfg.GroqAPIKey == "" && cfg.MistralAPIKey == "" && cfg.OpenRouterAPIKey == "" {
@@ -210,4 +218,13 @@ func mcpServersFromEnv(key string, bearerTokens map[string]string) ([]MCPServer,
 		})
 	}
 	return servers, nil
+}
+
+// totalTimeout keeps the overall budget at or above a single attempt's, since a total
+// smaller than one attempt would cut every request before its first model can answer.
+func totalTimeout(requestSeconds, totalSeconds int) time.Duration {
+	if totalSeconds < requestSeconds {
+		totalSeconds = requestSeconds
+	}
+	return time.Duration(totalSeconds) * time.Second
 }

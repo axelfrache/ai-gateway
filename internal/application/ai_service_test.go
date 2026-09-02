@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"testing"
+	"time"
 
 	"github.com/frachea/ai-gateway/internal/domain"
 )
@@ -558,4 +560,94 @@ func (e *fakeToolExecutor) ExecuteTool(_ context.Context, toolCallID, name, argu
 	result.ToolCallID = toolCallID
 	result.Name = name
 	return result, nil
+}
+
+// slowProvider blocks until the context is done, the way an upstream model that has
+// stopped answering does. It records how many candidates the chain actually tried.
+type slowProvider struct {
+	calls int
+}
+
+func (p *slowProvider) Generate(ctx context.Context, _ string, _ domain.GenerateRequest) (domain.GenerateResponse, error) {
+	p.calls++
+	<-ctx.Done()
+	return domain.GenerateResponse{}, domain.NewError(domain.ErrorKindTemporary, 0, "upstream timeout", ctx.Err())
+}
+
+func (p *slowProvider) Chat(ctx context.Context, _ string, _ domain.ChatRequest) (domain.ChatResponse, error) {
+	p.calls++
+	<-ctx.Done()
+	return domain.ChatResponse{}, domain.NewError(domain.ErrorKindTemporary, 0, "upstream timeout", ctx.Err())
+}
+
+// Without a budget the chain would spend the per-attempt timeout on each of the twelve
+// candidates, outliving both the caller and the server's own write deadline.
+func TestGenerateStopsWhenTheRequestBudgetIsSpent(t *testing.T) {
+	provider := &slowProvider{}
+	service, err := NewAIService(provider, []string{"a", "b", "c", "d"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.SetRequestBudget(30 * time.Millisecond)
+
+	start := time.Now()
+	_, err = service.Generate(context.Background(), domain.GenerateRequest{Prompt: "hello"})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected the budget to end the chain")
+	}
+	var aiErr *domain.AIError
+	if !errors.As(err, &aiErr) {
+		t.Fatalf("expected an *domain.AIError, got %v", err)
+	}
+	if aiErr.StatusCode != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want %d", aiErr.StatusCode, http.StatusGatewayTimeout)
+	}
+	if provider.calls != 1 {
+		t.Fatalf("tried %d candidates, want 1: the chain must stop, not race through the rest", provider.calls)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("took %s, want the budget to cut it short", elapsed)
+	}
+}
+
+func TestChatStopsWhenTheRequestBudgetIsSpent(t *testing.T) {
+	provider := &slowProvider{}
+	service, err := NewAIService(provider, []string{"a", "b", "c", "d"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.SetRequestBudget(30 * time.Millisecond)
+
+	_, err = service.Chat(context.Background(), domain.ChatRequest{
+		Messages: []domain.ChatMessage{{Role: "user", Content: json.RawMessage(`"hello"`)}},
+	})
+
+	if err == nil {
+		t.Fatal("expected the budget to end the chain")
+	}
+	if provider.calls != 1 {
+		t.Fatalf("tried %d candidates, want 1", provider.calls)
+	}
+}
+
+func TestZeroBudgetLeavesTheChainUnbounded(t *testing.T) {
+	provider := fakeProvider{
+		errors:    map[string]error{"a": domain.NewError(domain.ErrorKindTemporary, 0, "down", nil)},
+		responses: map[string]domain.GenerateResponse{"b": {Model: "b", Text: "ok"}},
+	}
+	service, err := NewAIService(provider, []string{"a", "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.SetRequestBudget(0)
+
+	result, err := service.Generate(context.Background(), domain.GenerateRequest{Prompt: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Model != "b" {
+		t.Fatalf("model = %q, want the fallback to still run", result.Model)
+	}
 }

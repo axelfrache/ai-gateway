@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -42,6 +43,7 @@ type AIService struct {
 	toolExecutor  domain.ToolExecutor
 	maxToolRounds int
 	health        *modelHealth
+	budget        time.Duration
 }
 
 // extra optionally carries [toolModels, jsonModels]. Either or both may be
@@ -123,6 +125,36 @@ func (s *AIService) expandAliases(models []string) []string {
 	return normalizeModels(expanded)
 }
 
+// SetRequestBudget caps a whole request, fallback chain included. Without it the
+// worst case is the per-attempt timeout times the number of candidates, which can
+// outlive the caller and even the server's own write deadline.
+func (s *AIService) SetRequestBudget(budget time.Duration) {
+	if budget > 0 {
+		s.budget = budget
+	}
+}
+
+// withBudget bounds the fallback chain as a whole. The returned cancel must be called.
+func (s *AIService) withBudget(ctx context.Context) (context.Context, context.CancelFunc) {
+	if s.budget <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, s.budget)
+}
+
+// budgetSpent reports whether the chain must stop rather than start another attempt.
+func budgetSpent(ctx context.Context, attempts []domain.Attempt) error {
+	if ctx.Err() == nil {
+		return nil
+	}
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return domain.NewError(domain.ErrorKindTemporary, 0,
+			fmt.Sprintf("caller went away after %d attempt(s)", len(attempts)), ctx.Err())
+	}
+	return domain.NewError(domain.ErrorKindTemporary, http.StatusGatewayTimeout,
+		fmt.Sprintf("request budget exhausted after %d attempt(s)", len(attempts)), ctx.Err())
+}
+
 func (s *AIService) SetToolExecutor(executor domain.ToolExecutor, maxToolRounds int) {
 	s.toolExecutor = executor
 	if maxToolRounds > 0 {
@@ -145,7 +177,13 @@ func (s *AIService) Generate(ctx context.Context, req domain.GenerateRequest) (d
 	models = s.health.order(models)
 	attempts := make([]domain.Attempt, 0, len(models))
 
+	ctx, cancel := s.withBudget(ctx)
+	defer cancel()
+
 	for _, model := range models {
+		if err := budgetSpent(ctx, attempts); err != nil {
+			return domain.GenerateResult{Attempts: attempts}, err
+		}
 		start := time.Now()
 		response, err := s.provider.Generate(ctx, model, req)
 		latencyMillis := time.Since(start).Milliseconds()
@@ -192,6 +230,9 @@ func (s *AIService) Chat(ctx context.Context, req domain.ChatRequest) (domain.Ch
 	if len(req.ResponseSchema) > 0 && !validResponseSchema(req.ResponseSchema) {
 		return domain.ChatResult{}, domain.NewError(domain.ErrorKindInvalidRequest, 0, "response_schema must be a JSON object", nil)
 	}
+
+	ctx, cancel := s.withBudget(ctx)
+	defer cancel()
 
 	if s.toolExecutor == nil {
 		return s.chatOnce(ctx, req)
@@ -278,6 +319,9 @@ func (s *AIService) chatOnce(ctx context.Context, req domain.ChatRequest) (domai
 	}
 
 	for _, model := range models {
+		if err := budgetSpent(ctx, attempts); err != nil {
+			return domain.ChatResult{Attempts: attempts}, err
+		}
 		start := time.Now()
 		response, err := chatProvider.Chat(ctx, model, req)
 		latencyMillis := time.Since(start).Milliseconds()

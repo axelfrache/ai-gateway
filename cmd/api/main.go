@@ -72,11 +72,15 @@ func main() {
 		aiService.SetToolExecutor(registry, cfg.MCPMaxToolRounds)
 	}
 
+	aiService.SetRequestBudget(cfg.TotalTimeout)
+
 	server := &http.Server{
-		Addr:         cfg.ServerAddr,
-		Handler:      httpapi.NewServer(aiService, logr, cfg.GatewayAPIKeys).Routes(),
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: cfg.RequestTimeout + 5*time.Second,
+		Addr:        cfg.ServerAddr,
+		Handler:     httpapi.NewServer(aiService, logr, cfg.GatewayAPIKeys).Routes(),
+		ReadTimeout: 10 * time.Second,
+		// Sized on the whole request, not one attempt: a chain that outlives this deadline
+		// produces a response the server can no longer write.
+		WriteTimeout: cfg.TotalTimeout + 5*time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
 

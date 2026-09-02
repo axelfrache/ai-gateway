@@ -277,6 +277,7 @@ curl -s http://localhost:8080/api/generate \
 | `OPENROUTER_API_KEY` | OpenRouter API key |
 | `SERVER_ADDR` | HTTP listen address |
 | `REQUEST_TIMEOUT_SECONDS` | Timeout per model attempt |
+| `TOTAL_TIMEOUT_SECONDS` | Timeout for the whole request, fallback chain included |
 | `GATEWAY_API_KEYS` | Comma-separated API keys allowed to call protected endpoints |
 | `MCP_SMOKE_HOST_PORT` | Host port used by the Docker Compose MCP smoke server |
 | `MODEL_FALLBACKS` | Ordered fallback chain using `provider:model`, and the chain used by the `ai-gateway:auto` alias |
