@@ -406,6 +406,31 @@ func (s *AIService) Models() []domain.ModelInfo {
 	return models
 }
 
+func (s *AIService) AvailableModels() []domain.ModelInfo {
+	all := s.Models()
+	available := make([]domain.ModelInfo, 0, len(all))
+	for _, m := range all {
+		if m.Provider == aliasProvider {
+			underlying, _ := s.resolveAlias(m.Name)
+			anyAvailable := false
+			for _, u := range underlying {
+				if s.health.available(u) {
+					anyAvailable = true
+					break
+				}
+			}
+			if anyAvailable {
+				available = append(available, m)
+			}
+		} else {
+			if s.health.available(m.Name) {
+				available = append(available, m)
+			}
+		}
+	}
+	return available
+}
+
 func (s *AIService) CheckModels(ctx context.Context, models []string) []domain.ModelCheck {
 	candidates := normalizeModels(models)
 	if len(candidates) == 0 {

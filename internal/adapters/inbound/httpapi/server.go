@@ -34,8 +34,10 @@ func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.Handle("GET /api/tags", s.requireAuth(http.HandlerFunc(s.ollamaTags)))
+	mux.Handle("GET /api/tags/available", s.requireAuth(http.HandlerFunc(s.ollamaTags)))
 	mux.Handle("POST /api/generate", s.requireAuth(http.HandlerFunc(s.ollamaGenerate)))
 	mux.Handle("GET /v1/models", s.requireAuth(http.HandlerFunc(s.models)))
+	mux.Handle("GET /v1/models/available", s.requireAuth(http.HandlerFunc(s.models)))
 	mux.Handle("POST /v1/models/check", s.requireAuth(http.HandlerFunc(s.checkModels)))
 	mux.Handle("POST /v1/generate", s.requireAuth(http.HandlerFunc(s.generate)))
 	mux.Handle("POST /v1/chat/completions", s.requireAuth(http.HandlerFunc(s.chatCompletions)))
@@ -73,8 +75,14 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
-func (s *Server) models(w http.ResponseWriter, _ *http.Request) {
-	models := s.service.Models()
+func (s *Server) models(w http.ResponseWriter, r *http.Request) {
+	availableOnly := r.URL.Query().Get("available") == "true" || r.URL.Path == "/v1/models/available"
+	var models []domain.ModelInfo
+	if availableOnly {
+		models = s.service.AvailableModels()
+	} else {
+		models = s.service.Models()
+	}
 	data := make([]openAIModel, 0, len(models))
 	for _, model := range models {
 		owner := model.Provider
@@ -112,8 +120,14 @@ func (s *Server) checkModels(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) ollamaTags(w http.ResponseWriter, _ *http.Request) {
-	models := s.service.Models()
+func (s *Server) ollamaTags(w http.ResponseWriter, r *http.Request) {
+	availableOnly := r.URL.Query().Get("available") == "true" || r.URL.Path == "/api/tags/available"
+	var models []domain.ModelInfo
+	if availableOnly {
+		models = s.service.AvailableModels()
+	} else {
+		models = s.service.Models()
+	}
 	items := make([]ollamaModel, 0, len(models))
 	modifiedAt := time.Now().UTC()
 
