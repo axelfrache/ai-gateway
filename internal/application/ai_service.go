@@ -387,6 +387,7 @@ func (s *AIService) Models() []domain.ModelInfo {
 			Order:         order,
 			SupportsTools: alias.supportsTools,
 			SupportsJSON:  alias.supportsJSON,
+			Available:     s.isAliasAvailable(alias.name),
 		})
 	}
 	for _, model := range candidates {
@@ -401,31 +402,28 @@ func (s *AIService) Models() []domain.ModelInfo {
 			Order:         order,
 			SupportsTools: supportsTools,
 			SupportsJSON:  supportsJSON,
+			Available:     s.health.available(model),
 		})
 	}
 	return models
+}
+
+func (s *AIService) isAliasAvailable(alias string) bool {
+	underlying, _ := s.resolveAlias(alias)
+	for _, u := range underlying {
+		if s.health.available(u) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *AIService) AvailableModels() []domain.ModelInfo {
 	all := s.Models()
 	available := make([]domain.ModelInfo, 0, len(all))
 	for _, m := range all {
-		if m.Provider == aliasProvider {
-			underlying, _ := s.resolveAlias(m.Name)
-			anyAvailable := false
-			for _, u := range underlying {
-				if s.health.available(u) {
-					anyAvailable = true
-					break
-				}
-			}
-			if anyAvailable {
-				available = append(available, m)
-			}
-		} else {
-			if s.health.available(m.Name) {
-				available = append(available, m)
-			}
+		if m.Available {
+			available = append(available, m)
 		}
 	}
 	return available

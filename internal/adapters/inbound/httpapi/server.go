@@ -32,6 +32,7 @@ func NewServer(service *application.AIService, logger *slog.Logger, apiKeys []st
 
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /", s.dashboard)
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.Handle("GET /api/tags", s.requireAuth(http.HandlerFunc(s.ollamaTags)))
 	mux.Handle("GET /api/tags/available", s.requireAuth(http.HandlerFunc(s.ollamaTags)))
@@ -46,6 +47,68 @@ func (s *Server) Routes() http.Handler {
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+
+	models := s.service.Models()
+
+	html := `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>AI Gateway Status</title>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; margin: 40px auto; max-width: 800px; line-height: 1.6; color: #333; }
+  table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+  th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
+  th { background: #f5f5f5; }
+  .badge { padding: 4px 8px; border-radius: 12px; font-size: 12px; font-weight: bold; }
+  .badge.ok { background: #e6f4ea; color: #1e8e3e; }
+  .badge.err { background: #fce8e6; color: #d93025; }
+  .alias { font-style: italic; color: #666; }
+</style>
+</head>
+<body>
+  <h1>AI Gateway Status</h1>
+  <p>Live fallback chain and availability status.</p>
+  <table>
+    <thead>
+      <tr>
+        <th>Candidate / Alias</th>
+        <th>Provider</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+`
+	for _, m := range models {
+		status := "<span class=\"badge err\">Unavailable (Cooldown)</span>"
+		if m.Available {
+			status = "<span class=\"badge ok\">Available</span>"
+		}
+
+		nameClass := ""
+		if m.Provider == "ai-gateway" {
+			nameClass = "class=\"alias\""
+		}
+
+		html += fmt.Sprintf("<tr><td %s>%s</td><td>%s</td><td>%s</td></tr>", nameClass, m.Name, m.Provider, status)
+	}
+
+	html += `
+    </tbody>
+  </table>
+</body>
+</html>`
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(html))
 }
 
 func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
