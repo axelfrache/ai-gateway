@@ -221,6 +221,11 @@ func (c *Client) Chat(ctx context.Context, model string, req domain.ChatRequest)
 		Model:        model,
 		Message:      message,
 		FinishReason: finishReason,
+		Usage: domain.Usage{
+			PromptTokens: geminiResp.UsageMetadata.PromptTokenCount,
+			// Gemini bills thinking tokens as output but reports them apart.
+			CompletionTokens: geminiResp.UsageMetadata.CandidatesTokenCount + geminiResp.UsageMetadata.ThoughtsTokenCount,
+		},
 	}, nil
 }
 
@@ -294,6 +299,11 @@ type generateContentResponse struct {
 	PromptFeedback struct {
 		BlockReason string `json:"blockReason"`
 	} `json:"promptFeedback"`
+	UsageMetadata struct {
+		PromptTokenCount     int `json:"promptTokenCount"`
+		CandidatesTokenCount int `json:"candidatesTokenCount"`
+		ThoughtsTokenCount   int `json:"thoughtsTokenCount"`
+	} `json:"usageMetadata"`
 }
 
 func (r generateContentResponse) Text() string {

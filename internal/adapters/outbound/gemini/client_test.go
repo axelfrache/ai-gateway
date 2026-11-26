@@ -1,9 +1,13 @@
 package gemini
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"net/http"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/frachea/ai-gateway/internal/domain"
 )
@@ -178,4 +182,38 @@ func TestClassifyGeminiErrorTreatsTokenLimitAsFallbackable(t *testing.T) {
 	if domain.Kind(err) != domain.ErrorKindModelUnavailable {
 		t.Fatalf("expected model unavailable error, got %q", domain.Kind(err))
 	}
+}
+
+func TestClientChatReportsUsageIncludingThoughts(t *testing.T) {
+	client := NewClient("test-key", "https://gemini.test", time.Second)
+	client.httpClient = &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(strings.NewReader(`{
+					"candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}],
+					"usageMetadata": {"promptTokenCount": 120, "candidatesTokenCount": 8, "thoughtsTokenCount": 30}
+				}`)),
+			}, nil
+		}),
+	}
+
+	response, err := client.Chat(context.Background(), "gemini-3.5-flash-lite", domain.ChatRequest{
+		Messages: []domain.ChatMessage{{Role: "user", Content: json.RawMessage(`"hello"`)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := domain.Usage{PromptTokens: 120, CompletionTokens: 38}
+	if response.Usage != want {
+		t.Fatalf("expected usage %+v, got %+v", want, response.Usage)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return fn(r)
 }

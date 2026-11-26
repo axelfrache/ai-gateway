@@ -216,6 +216,10 @@ func (c *Client) Chat(ctx context.Context, model string, req domain.ChatRequest)
 		Model:        model,
 		Message:      message,
 		FinishReason: finishReason,
+		Usage: domain.Usage{
+			PromptTokens:     parsed.Usage.PromptTokens,
+			CompletionTokens: parsed.Usage.CompletionTokens,
+		},
 	}, nil
 }
 
@@ -232,6 +236,10 @@ type chatCompletionResponse struct {
 		Message      message `json:"message"`
 		FinishReason string  `json:"finish_reason"`
 	} `json:"choices"`
+	Usage struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+	} `json:"usage"`
 }
 
 func (r chatCompletionResponse) Text() string {

@@ -242,6 +242,8 @@ func (s *AIService) Chat(ctx context.Context, req domain.ChatRequest) (domain.Ch
 	current.Messages = append([]domain.ChatMessage(nil), req.Messages...)
 	allAttempts := []domain.Attempt{}
 	fallbackUsed := false
+	// Each tool round is a billed model call, so the client sees the sum.
+	var usage domain.Usage
 
 	for round := 0; round <= s.maxToolRounds; round++ {
 		tools, err := s.toolExecutor.ListTools(ctx)
@@ -255,6 +257,8 @@ func (s *AIService) Chat(ctx context.Context, req domain.ChatRequest) (domain.Ch
 
 		result, err := s.chatOnce(ctx, current)
 		allAttempts = append(allAttempts, result.Attempts...)
+		usage = usage.Add(result.Usage)
+		result.Usage = usage
 		if result.FallbackUsed || len(result.Attempts) > 1 {
 			fallbackUsed = true
 		}
@@ -337,6 +341,7 @@ func (s *AIService) chatOnce(ctx context.Context, req domain.ChatRequest) (domai
 				Model:        response.Model,
 				Message:      response.Message,
 				FinishReason: response.FinishReason,
+				Usage:        response.Usage,
 				FallbackUsed: len(attempts) > 1,
 				Attempts:     attempts,
 			}, nil
