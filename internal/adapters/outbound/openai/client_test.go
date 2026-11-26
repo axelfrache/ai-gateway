@@ -124,6 +124,46 @@ func TestMistralClientMapsRequiredToolChoiceToAny(t *testing.T) {
 	}
 }
 
+func TestClientChatStripsForeignToolCallFields(t *testing.T) {
+	var payload struct {
+		Messages []map[string]json.RawMessage `json:"messages"`
+	}
+
+	client := NewClient("Mistral", "test-key", "https://mistral.test", "max_tokens", time.Second)
+	client.httpClient = &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       ioNopCloser{strings.NewReader(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`)},
+			}, nil
+		}),
+	}
+
+	_, err := client.Chat(context.Background(), "mistral-small-latest", domain.ChatRequest{
+		Messages: []domain.ChatMessage{
+			{Role: "user", Content: json.RawMessage(`"status?"`)},
+			{
+				Role:      "assistant",
+				Content:   json.RawMessage(`null`),
+				ToolCalls: json.RawMessage(`[{"id":"call_1","type":"function","function":{"name":"get_status","arguments":"{}"},"thought_signature":"sig","extra_content":{"google":{"thought_signature":"sig"}}}]`),
+			},
+			{Role: "tool", ToolCallID: "call_1", Name: "get_status", Content: json.RawMessage(`"ok"`)},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := `[{"id":"call_1","type":"function","function":{"name":"get_status","arguments":"{}"}}]`
+	if got := string(payload.Messages[1]["tool_calls"]); got != want {
+		t.Fatalf("expected standard tool calls %s, got %s", want, got)
+	}
+}
+
 func TestClassifyErrorTreatsTokenLimitAsFallbackable(t *testing.T) {
 	err := classifyError("Groq", http.StatusBadRequest, []byte(`{"error":{"message":"This model's maximum context length was exceeded"}}`))
 
