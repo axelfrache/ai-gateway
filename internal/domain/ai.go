@@ -45,6 +45,19 @@ type ChatResponse struct {
 	Model        string
 	Message      ChatMessage
 	FinishReason string
+	Usage        Usage
+}
+
+type Usage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+}
+
+func (u Usage) Add(other Usage) Usage {
+	return Usage{
+		PromptTokens:     u.PromptTokens + other.PromptTokens,
+		CompletionTokens: u.CompletionTokens + other.CompletionTokens,
+	}
 }
 
 type ToolDefinition struct {
@@ -78,6 +91,7 @@ type ChatResult struct {
 	Model        string      `json:"model"`
 	Message      ChatMessage `json:"message"`
 	FinishReason string      `json:"finish_reason"`
+	Usage        Usage       `json:"usage"`
 	FallbackUsed bool        `json:"fallback_used"`
 	Attempts     []Attempt   `json:"attempts"`
 }

@@ -387,6 +387,7 @@ func TestChatExecutesGatewayToolCalls(t *testing.T) {
 					ToolCalls: json.RawMessage(`[{"id":"call_1","type":"function","function":{"name":"kube__get_pods","arguments":"{\"namespace\":\"ai\"}"}}]`),
 				},
 				FinishReason: "tool_calls",
+				Usage:        domain.Usage{PromptTokens: 100, CompletionTokens: 10},
 			},
 			{
 				Model: "gemini:gemini-3.6-flash",
@@ -395,6 +396,7 @@ func TestChatExecutesGatewayToolCalls(t *testing.T) {
 					Content: json.RawMessage(`"Pods are ready"`),
 				},
 				FinishReason: "stop",
+				Usage:        domain.Usage{PromptTokens: 130, CompletionTokens: 5},
 			},
 		},
 	}
@@ -432,6 +434,9 @@ func TestChatExecutesGatewayToolCalls(t *testing.T) {
 	}
 	if provider.calls != 2 {
 		t.Fatalf("expected 2 chat calls, got %d", provider.calls)
+	}
+	if want := (domain.Usage{PromptTokens: 230, CompletionTokens: 15}); result.Usage != want {
+		t.Fatalf("expected usage summed across tool rounds %+v, got %+v", want, result.Usage)
 	}
 	if executor.executedName != "kube__get_pods" || executor.executedArguments != `{"namespace":"ai"}` {
 		t.Fatalf("unexpected tool execution: %q %q", executor.executedName, executor.executedArguments)

@@ -63,7 +63,7 @@ func TestClientChatForwardsTools(t *testing.T) {
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Header:     http.Header{"Content-Type": []string{"application/json"}},
-				Body:       ioNopCloser{strings.NewReader(`{"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_status","arguments":"{}"}}]}}]}`)},
+				Body:       ioNopCloser{strings.NewReader(`{"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_status","arguments":"{}"}}]}}],"usage":{"prompt_tokens":42,"completion_tokens":7,"total_tokens":49}}`)},
 			}, nil
 		}),
 	}
@@ -88,6 +88,9 @@ func TestClientChatForwardsTools(t *testing.T) {
 	}
 	if string(response.Message.ToolCalls) == "" || response.FinishReason != "tool_calls" {
 		t.Fatalf("unexpected tool response: %#v", response)
+	}
+	if want := (domain.Usage{PromptTokens: 42, CompletionTokens: 7}); response.Usage != want {
+		t.Fatalf("expected usage %+v, got %+v", want, response.Usage)
 	}
 }
 

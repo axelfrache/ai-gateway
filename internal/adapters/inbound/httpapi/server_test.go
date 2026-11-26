@@ -740,3 +740,84 @@ func (p *capturingProvider) Chat(_ context.Context, model string, req domain.Cha
 		FinishReason: "stop",
 	}, nil
 }
+
+func TestChatCompletionsEndpointStreamsIndexedToolCallsAndUsage(t *testing.T) {
+	provider := &capturingProvider{
+		chatResponse: domain.ChatResponse{
+			Model: "gemini:gemini-3.6-flash",
+			Message: domain.ChatMessage{
+				Role:      "assistant",
+				Content:   json.RawMessage("null"),
+				ToolCalls: json.RawMessage(`[{"id":"call_1","type":"function","function":{"name":"get_status","arguments":"{}"}},{"id":"call_2","type":"function","function":{"name":"get_logs","arguments":"{}"}}]`),
+			},
+			FinishReason: "tool_calls",
+			Usage:        domain.Usage{PromptTokens: 50, CompletionTokens: 12},
+		},
+	}
+	service, err := application.NewAIService(provider, []string{"gemini:gemini-3.6-flash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(service, slog.New(slog.DiscardHandler), []string{"test-key"}).Routes()
+
+	body, err := json.Marshal(map[string]any{
+		"model":    "gemini:gemini-3.6-flash",
+		"stream":   true,
+		"messages": []map[string]any{{"role": "user", "content": "hello"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	type chunk struct {
+		Choices []struct {
+			Delta struct {
+				ToolCalls []struct {
+					Index *int   `json:"index"`
+					ID    string `json:"id"`
+				} `json:"tool_calls"`
+			} `json:"delta"`
+		} `json:"choices"`
+		Usage *struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	var chunks []chunk
+	for _, line := range strings.Split(rec.Body.String(), "\n") {
+		payload, ok := strings.CutPrefix(line, "data: ")
+		if !ok || payload == "[DONE]" {
+			continue
+		}
+		var parsed chunk
+		if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
+			t.Fatal(err)
+		}
+		chunks = append(chunks, parsed)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 chunks, got %d: %s", len(chunks), rec.Body.String())
+	}
+
+	calls := chunks[0].Choices[0].Delta.ToolCalls
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 tool calls, got %d", len(calls))
+	}
+	for i, call := range calls {
+		if call.Index == nil || *call.Index != i {
+			t.Fatalf("expected tool call %s to carry index %d", call.ID, i)
+		}
+	}
+
+	usage := chunks[1].Usage
+	if usage == nil || usage.PromptTokens != 50 || usage.CompletionTokens != 12 || usage.TotalTokens != 62 {
+		t.Fatalf("expected usage on the final chunk, got %+v", usage)
+	}
+}

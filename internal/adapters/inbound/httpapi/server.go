@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -536,8 +537,37 @@ func newChatCompletionResponse(result domain.ChatResult) chatCompletionResponse 
 				FinishReason: &reason,
 			},
 		},
-		Usage: chatCompletionUsage{},
+		Usage: newChatCompletionUsage(result.Usage),
 	}
+}
+
+func newChatCompletionUsage(usage domain.Usage) chatCompletionUsage {
+	return chatCompletionUsage{
+		PromptTokens:     usage.PromptTokens,
+		CompletionTokens: usage.CompletionTokens,
+		TotalTokens:      usage.PromptTokens + usage.CompletionTokens,
+	}
+}
+
+// indexedToolCalls adds the per-call index that OpenAI streaming clients
+// use to tell parallel calls apart; without it they merge every call into
+// the first one.
+func indexedToolCalls(raw json.RawMessage) json.RawMessage {
+	if !rawJSONHasValue(raw) {
+		return raw
+	}
+	var calls []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &calls); err != nil {
+		return raw
+	}
+	for i := range calls {
+		calls[i]["index"] = json.RawMessage(strconv.Itoa(i))
+	}
+	indexed, err := json.Marshal(calls)
+	if err != nil {
+		return raw
+	}
+	return indexed
 }
 
 func writeChatCompletionStream(w http.ResponseWriter, result domain.ChatResult) {
@@ -565,7 +595,7 @@ func writeChatCompletionStream(w http.ResponseWriter, result domain.ChatResult) 
 				Delta: &chatCompletionDelta{
 					Role:      "assistant",
 					Content:   content,
-					ToolCalls: result.Message.ToolCalls,
+					ToolCalls: indexedToolCalls(result.Message.ToolCalls),
 				},
 				FinishReason: nil,
 			},
@@ -583,6 +613,7 @@ func writeChatCompletionStream(w http.ResponseWriter, result domain.ChatResult) 
 				FinishReason: &reason,
 			},
 		},
+		"usage": newChatCompletionUsage(result.Usage),
 	})
 	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 	if flusher, ok := w.(http.Flusher); ok {
