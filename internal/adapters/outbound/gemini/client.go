@@ -365,6 +365,7 @@ func (r generateContentResponse) ChatMessage() (domain.ChatMessage, string, erro
 						Arguments: arguments,
 					},
 					ThoughtSignature: part.ThoughtSignature,
+					ExtraContent:     newToolCallExtraContent(part.ThoughtSignature),
 				})
 			}
 		}
@@ -413,6 +414,34 @@ type openAIToolCall struct {
 	Type             string             `json:"type"`
 	Function         openAIFunctionCall `json:"function"`
 	ThoughtSignature string             `json:"thought_signature,omitempty"`
+	// Google's documented OpenAI-compatible shape for the same signature;
+	// clients built against Gemini's own OpenAI endpoint only replay this one.
+	ExtraContent *toolCallExtraContent `json:"extra_content,omitempty"`
+}
+
+type toolCallExtraContent struct {
+	Google struct {
+		ThoughtSignature string `json:"thought_signature,omitempty"`
+	} `json:"google"`
+}
+
+func newToolCallExtraContent(signature string) *toolCallExtraContent {
+	if signature == "" {
+		return nil
+	}
+	extra := &toolCallExtraContent{}
+	extra.Google.ThoughtSignature = signature
+	return extra
+}
+
+func (c openAIToolCall) signature() string {
+	if signature := strings.TrimSpace(c.ThoughtSignature); signature != "" {
+		return signature
+	}
+	if c.ExtraContent != nil {
+		return strings.TrimSpace(c.ExtraContent.Google.ThoughtSignature)
+	}
+	return ""
 }
 
 type openAIFunctionCall struct {
@@ -455,7 +484,7 @@ func contentsFromMessages(messages []domain.ChatMessage) ([]content, string, err
 				if err != nil {
 					return nil, "", err
 				}
-				signature := strings.TrimSpace(call.ThoughtSignature)
+				signature := call.signature()
 				if signature == "" {
 					// Gemini requires every replayed functionCall part to carry a
 					// thoughtSignature. Calls that didn't originate from Gemini (a

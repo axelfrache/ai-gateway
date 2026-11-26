@@ -145,6 +145,9 @@ func TestGenerateContentResponseReturnsToolCalls(t *testing.T) {
 	if len(calls) != 1 || calls[0].ThoughtSignature != "sig-abc" {
 		t.Fatalf("expected thought signature to be captured, got %#v", calls)
 	}
+	if calls[0].ExtraContent == nil || calls[0].ExtraContent.Google.ThoughtSignature != "sig-abc" {
+		t.Fatalf("expected thought signature in extra_content too, got %#v", calls[0].ExtraContent)
+	}
 }
 
 func TestContentsFromMessagesMapsToolResults(t *testing.T) {
@@ -198,6 +201,24 @@ func TestContentsFromMessagesReplaysThoughtSignature(t *testing.T) {
 	}
 	if model.Parts[1].ThoughtSignature != "skip_thought_signature_validator" {
 		t.Fatalf("expected placeholder thought signature for unsigned call, got %q", model.Parts[1].ThoughtSignature)
+	}
+}
+
+func TestContentsFromMessagesReplaysSignatureFromExtraContent(t *testing.T) {
+	contents, _, err := contentsFromMessages([]domain.ChatMessage{
+		{Role: "user", Content: json.RawMessage(`"status?"`)},
+		{
+			Role:      "assistant",
+			Content:   json.RawMessage("null"),
+			ToolCalls: json.RawMessage(`[{"id":"call_1","type":"function","function":{"name":"get_status","arguments":"{}"},"extra_content":{"google":{"thought_signature":"sig-xyz"}}}]`),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := contents[1].Parts[0].ThoughtSignature; got != "sig-xyz" {
+		t.Fatalf("expected signature from extra_content to be replayed, got %q", got)
 	}
 }
 
