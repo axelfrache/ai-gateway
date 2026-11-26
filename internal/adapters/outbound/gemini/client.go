@@ -168,53 +168,31 @@ func (c *Client) Chat(ctx context.Context, model string, req domain.ChatRequest)
 		payload.ToolConfig = toolConfig
 	}
 
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return domain.ChatResponse{}, domain.NewError(domain.ErrorKindInvalidRequest, 0, "failed to encode Gemini request", err)
-	}
-
-	endpoint := fmt.Sprintf("%s/models/%s:generateContent?key=%s", c.baseURL, url.PathEscape(model), url.QueryEscape(c.apiKey))
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return domain.ChatResponse{}, domain.NewError(domain.ErrorKindInvalidRequest, 0, "failed to build Gemini request", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	httpResp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return domain.ChatResponse{}, domain.NewError(domain.ErrorKindTemporary, 0, "request was canceled", err)
+	geminiResp, statusCode, err := c.generateContent(ctx, model, payload)
+	if err != nil && len(payload.Tools) > 0 && schemaTooComplexError(err.Error()) {
+		// Array length bounds are what most often push a nested tool schema
+		// past Gemini's grammar limit, and they are hints the client still
+		// enforces on its side. Retry once without them rather than lose the
+		// model for a schema the other providers take as-is.
+		declarations, relaxErr := functionDeclarationsFrom(req.Tools, true)
+		if relaxErr == nil && len(declarations) > 0 {
+			payload.Tools = []tool{{FunctionDeclarations: declarations}}
+			geminiResp, statusCode, err = c.generateContent(ctx, model, payload)
 		}
-		if errors.Is(err, context.DeadlineExceeded) {
-			return domain.ChatResponse{}, domain.NewError(domain.ErrorKindTemporary, 0, "request timed out", err)
-		}
-		return domain.ChatResponse{}, domain.NewError(domain.ErrorKindTemporary, 0, "Gemini request failed", err)
 	}
-	defer httpResp.Body.Close()
-
-	responseBody, err := io.ReadAll(io.LimitReader(httpResp.Body, 4<<20))
 	if err != nil {
-		return domain.ChatResponse{}, domain.NewError(domain.ErrorKindTemporary, httpResp.StatusCode, "failed to read Gemini response", err)
-	}
-
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		return domain.ChatResponse{}, classifyGeminiError(httpResp.StatusCode, responseBody)
-	}
-
-	var geminiResp generateContentResponse
-	if err := json.Unmarshal(responseBody, &geminiResp); err != nil {
-		return domain.ChatResponse{}, domain.NewError(domain.ErrorKindTemporary, httpResp.StatusCode, "failed to decode Gemini response", err)
+		return domain.ChatResponse{}, err
 	}
 
 	message, finishReason, err := geminiResp.ChatMessage()
 	if err != nil {
 		if geminiResp.PromptFeedback.BlockReason != "" {
-			return domain.ChatResponse{}, domain.NewError(domain.ErrorKindSafety, httpResp.StatusCode, "Gemini blocked the prompt: "+geminiResp.PromptFeedback.BlockReason, nil)
+			return domain.ChatResponse{}, domain.NewError(domain.ErrorKindSafety, statusCode, "Gemini blocked the prompt: "+geminiResp.PromptFeedback.BlockReason, nil)
 		}
 		if finishReason := geminiResp.FirstFinishReason(); finishReason == "SAFETY" || finishReason == "RECITATION" {
-			return domain.ChatResponse{}, domain.NewError(domain.ErrorKindSafety, httpResp.StatusCode, "Gemini stopped generation: "+finishReason, nil)
+			return domain.ChatResponse{}, domain.NewError(domain.ErrorKindSafety, statusCode, "Gemini stopped generation: "+finishReason, nil)
 		}
-		return domain.ChatResponse{}, domain.NewError(domain.ErrorKindTemporary, httpResp.StatusCode, err.Error(), nil)
+		return domain.ChatResponse{}, domain.NewError(domain.ErrorKindTemporary, statusCode, err.Error(), nil)
 	}
 
 	return domain.ChatResponse{
@@ -283,6 +261,47 @@ type functionCall struct {
 type functionResponse struct {
 	Name     string          `json:"name"`
 	Response json.RawMessage `json:"response"`
+}
+
+func (c *Client) generateContent(ctx context.Context, model string, payload generateContentRequest) (generateContentResponse, int, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return generateContentResponse{}, 0, domain.NewError(domain.ErrorKindInvalidRequest, 0, "failed to encode Gemini request", err)
+	}
+
+	endpoint := fmt.Sprintf("%s/models/%s:generateContent?key=%s", c.baseURL, url.PathEscape(model), url.QueryEscape(c.apiKey))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return generateContentResponse{}, 0, domain.NewError(domain.ErrorKindInvalidRequest, 0, "failed to build Gemini request", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	httpResp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return generateContentResponse{}, 0, domain.NewError(domain.ErrorKindTemporary, 0, "request was canceled", err)
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return generateContentResponse{}, 0, domain.NewError(domain.ErrorKindTemporary, 0, "request timed out", err)
+		}
+		return generateContentResponse{}, 0, domain.NewError(domain.ErrorKindTemporary, 0, "Gemini request failed", err)
+	}
+	defer httpResp.Body.Close()
+
+	responseBody, err := io.ReadAll(io.LimitReader(httpResp.Body, 4<<20))
+	if err != nil {
+		return generateContentResponse{}, httpResp.StatusCode, domain.NewError(domain.ErrorKindTemporary, httpResp.StatusCode, "failed to read Gemini response", err)
+	}
+
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		return generateContentResponse{}, httpResp.StatusCode, classifyGeminiError(httpResp.StatusCode, responseBody)
+	}
+
+	var geminiResp generateContentResponse
+	if err := json.Unmarshal(responseBody, &geminiResp); err != nil {
+		return generateContentResponse{}, httpResp.StatusCode, domain.NewError(domain.ErrorKindTemporary, httpResp.StatusCode, "failed to decode Gemini response", err)
+	}
+	return geminiResp, httpResp.StatusCode, nil
 }
 
 type generateContentResponse struct {
@@ -356,6 +375,7 @@ func (r generateContentResponse) ChatMessage() (domain.ChatMessage, string, erro
 						Arguments: arguments,
 					},
 					ThoughtSignature: part.ThoughtSignature,
+					ExtraContent:     newToolCallExtraContent(part.ThoughtSignature),
 				})
 			}
 		}
@@ -404,6 +424,34 @@ type openAIToolCall struct {
 	Type             string             `json:"type"`
 	Function         openAIFunctionCall `json:"function"`
 	ThoughtSignature string             `json:"thought_signature,omitempty"`
+	// Google's documented OpenAI-compatible shape for the same signature;
+	// clients built against Gemini's own OpenAI endpoint only replay this one.
+	ExtraContent *toolCallExtraContent `json:"extra_content,omitempty"`
+}
+
+type toolCallExtraContent struct {
+	Google struct {
+		ThoughtSignature string `json:"thought_signature,omitempty"`
+	} `json:"google"`
+}
+
+func newToolCallExtraContent(signature string) *toolCallExtraContent {
+	if signature == "" {
+		return nil
+	}
+	extra := &toolCallExtraContent{}
+	extra.Google.ThoughtSignature = signature
+	return extra
+}
+
+func (c openAIToolCall) signature() string {
+	if signature := strings.TrimSpace(c.ThoughtSignature); signature != "" {
+		return signature
+	}
+	if c.ExtraContent != nil {
+		return strings.TrimSpace(c.ExtraContent.Google.ThoughtSignature)
+	}
+	return ""
 }
 
 type openAIFunctionCall struct {
@@ -446,7 +494,7 @@ func contentsFromMessages(messages []domain.ChatMessage) ([]content, string, err
 				if err != nil {
 					return nil, "", err
 				}
-				signature := strings.TrimSpace(call.ThoughtSignature)
+				signature := call.signature()
 				if signature == "" {
 					// Gemini requires every replayed functionCall part to carry a
 					// thoughtSignature. Calls that didn't originate from Gemini (a
@@ -497,6 +545,12 @@ func contentsFromMessages(messages []domain.ChatMessage) ([]content, string, err
 }
 
 func functionDeclarationsFromTools(raw json.RawMessage) ([]functionDeclaration, error) {
+	return functionDeclarationsFrom(raw, false)
+}
+
+// functionDeclarationsFrom converts OpenAI tools. relaxed also drops array
+// length bounds, for a schema Gemini refused as too complex.
+func functionDeclarationsFrom(raw json.RawMessage, relaxed bool) ([]functionDeclaration, error) {
 	var tools []openAITool
 	if err := json.Unmarshal(raw, &tools); err != nil {
 		return nil, err
@@ -515,7 +569,7 @@ func functionDeclarationsFromTools(raw json.RawMessage) ([]functionDeclaration, 
 		if !rawJSONHasValue(parameters) {
 			parameters = json.RawMessage(`{"type":"object","properties":{}}`)
 		}
-		normalized, err := normalizeSchema(parameters)
+		normalized, err := normalizeSchemaWith(parameters, relaxed)
 		if err != nil {
 			return nil, err
 		}
@@ -668,11 +722,15 @@ var geminiSchemaKeywords = map[string]bool{
 }
 
 func normalizeSchema(schema json.RawMessage) (json.RawMessage, error) {
+	return normalizeSchemaWith(schema, false)
+}
+
+func normalizeSchemaWith(schema json.RawMessage, dropArrayBounds bool) (json.RawMessage, error) {
 	var value any
 	if err := json.Unmarshal(schema, &value); err != nil {
 		return nil, err
 	}
-	sanitizeSchemaForGemini(value)
+	sanitizeSchemaForGemini(value, dropArrayBounds)
 
 	normalized, err := json.Marshal(value)
 	if err != nil {
@@ -681,7 +739,7 @@ func normalizeSchema(schema json.RawMessage) (json.RawMessage, error) {
 	return normalized, nil
 }
 
-func sanitizeSchemaForGemini(value any) {
+func sanitizeSchemaForGemini(value any, dropArrayBounds bool) {
 	typed, ok := value.(map[string]any)
 	if !ok {
 		return
@@ -693,23 +751,37 @@ func sanitizeSchemaForGemini(value any) {
 			typed["enum"] = []any{constValue}
 		}
 	}
+	// Gemini has no oneOf, and dropping it erases every alternative: a
+	// discriminated union (what zod emits) would reach the model as an empty
+	// schema. Each branch already pins its discriminator, so anyOf accepts
+	// the same values.
+	if oneOf, ok := typed["oneOf"]; ok {
+		delete(typed, "oneOf")
+		if _, hasAnyOf := typed["anyOf"]; !hasAnyOf {
+			typed["anyOf"] = oneOf
+		}
+	}
 	for key := range typed {
 		if !geminiSchemaKeywords[key] {
 			delete(typed, key)
 		}
 	}
+	if dropArrayBounds {
+		delete(typed, "minItems")
+		delete(typed, "maxItems")
+	}
 
 	if properties, ok := typed["properties"].(map[string]any); ok {
 		for _, propSchema := range properties {
-			sanitizeSchemaForGemini(propSchema)
+			sanitizeSchemaForGemini(propSchema, dropArrayBounds)
 		}
 	}
 	if items, ok := typed["items"]; ok {
-		sanitizeSchemaForGemini(items)
+		sanitizeSchemaForGemini(items, dropArrayBounds)
 	}
 	if anyOf, ok := typed["anyOf"].([]any); ok {
 		for _, sub := range anyOf {
-			sanitizeSchemaForGemini(sub)
+			sanitizeSchemaForGemini(sub, dropArrayBounds)
 		}
 	}
 }
@@ -741,7 +813,7 @@ func classifyGeminiError(statusCode int, body []byte) error {
 		return domain.NewError(domain.ErrorKindRateLimited, statusCode, message, nil)
 	case statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden:
 		return domain.NewError(domain.ErrorKindAuth, statusCode, message, nil)
-	case (statusCode == http.StatusBadRequest || status == "INVALID_ARGUMENT") && tokenLimitError(message):
+	case (statusCode == http.StatusBadRequest || status == "INVALID_ARGUMENT") && (tokenLimitError(message) || schemaTooComplexError(message)):
 		return domain.NewError(domain.ErrorKindModelUnavailable, statusCode, message, nil)
 	case statusCode == http.StatusBadRequest || status == "INVALID_ARGUMENT":
 		return domain.NewError(domain.ErrorKindInvalidRequest, statusCode, message, nil)
@@ -752,6 +824,12 @@ func classifyGeminiError(statusCode int, body []byte) error {
 	default:
 		return domain.NewError(domain.ErrorKindUnknown, statusCode, message, nil)
 	}
+}
+
+// schemaTooComplexError matches Gemini's refusal of a schema whose grammar
+// is too large to serve. Another provider may well accept the same schema.
+func schemaTooComplexError(message string) bool {
+	return strings.Contains(strings.ToLower(message), "too many states")
 }
 
 func tokenLimitError(message string) bool {

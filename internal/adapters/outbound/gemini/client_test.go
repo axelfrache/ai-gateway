@@ -60,6 +60,31 @@ func TestFunctionDeclarationsFromToolsConvertsConstToEnum(t *testing.T) {
 	}
 }
 
+func TestFunctionDeclarationsFromToolsKeepsOneOfAsAnyOf(t *testing.T) {
+	tools := json.RawMessage(`[{"type":"function","function":{"name":"apply","parameters":{
+		"type":"object",
+		"properties":{
+			"operations":{"type":"array","items":{"oneOf":[
+				{"type":"object","properties":{"op":{"type":"string","const":"add"},"name":{"type":"string"}},"required":["op","name"]},
+				{"type":"object","properties":{"op":{"type":"string","const":"remove"},"id":{"type":"string"}},"required":["op","id"]}
+			]}}
+		}
+	}}}]`)
+
+	declarations, err := functionDeclarationsFromTools(tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := `{"properties":{"operations":{"items":{"anyOf":[` +
+		`{"properties":{"name":{"type":"string"},"op":{"enum":["add"],"type":"string"}},"required":["op","name"],"type":"object"},` +
+		`{"properties":{"id":{"type":"string"},"op":{"enum":["remove"],"type":"string"}},"required":["op","id"],"type":"object"}` +
+		`]},"type":"array"}},"type":"object"}`
+	if string(declarations[0].Parameters) != want {
+		t.Fatalf("expected oneOf to survive as anyOf, got %s", declarations[0].Parameters)
+	}
+}
+
 func TestFunctionDeclarationsFromToolsStripsUnknownJSONSchemaKeywords(t *testing.T) {
 	tools := json.RawMessage(`[{"type":"function","function":{"name":"complex_tool","parameters":{
 		"type":"object",
@@ -120,6 +145,9 @@ func TestGenerateContentResponseReturnsToolCalls(t *testing.T) {
 	if len(calls) != 1 || calls[0].ThoughtSignature != "sig-abc" {
 		t.Fatalf("expected thought signature to be captured, got %#v", calls)
 	}
+	if calls[0].ExtraContent == nil || calls[0].ExtraContent.Google.ThoughtSignature != "sig-abc" {
+		t.Fatalf("expected thought signature in extra_content too, got %#v", calls[0].ExtraContent)
+	}
 }
 
 func TestContentsFromMessagesMapsToolResults(t *testing.T) {
@@ -176,6 +204,24 @@ func TestContentsFromMessagesReplaysThoughtSignature(t *testing.T) {
 	}
 }
 
+func TestContentsFromMessagesReplaysSignatureFromExtraContent(t *testing.T) {
+	contents, _, err := contentsFromMessages([]domain.ChatMessage{
+		{Role: "user", Content: json.RawMessage(`"status?"`)},
+		{
+			Role:      "assistant",
+			Content:   json.RawMessage("null"),
+			ToolCalls: json.RawMessage(`[{"id":"call_1","type":"function","function":{"name":"get_status","arguments":"{}"},"extra_content":{"google":{"thought_signature":"sig-xyz"}}}]`),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := contents[1].Parts[0].ThoughtSignature; got != "sig-xyz" {
+		t.Fatalf("expected signature from extra_content to be replayed, got %q", got)
+	}
+}
+
 func TestClassifyGeminiErrorTreatsTokenLimitAsFallbackable(t *testing.T) {
 	err := classifyGeminiError(http.StatusBadRequest, []byte(`{"error":{"code":400,"message":"Input exceeds the maximum token limit","status":"INVALID_ARGUMENT"}}`))
 
@@ -216,4 +262,59 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return fn(r)
+}
+
+func TestClientChatRetriesWithoutArrayBoundsWhenSchemaIsTooComplex(t *testing.T) {
+	var bodies []string
+	client := NewClient("test-key", "https://gemini.test", time.Second)
+	client.httpClient = &http.Client{
+		Transport: geminiRoundTrip(func(r *http.Request) (*http.Response, error) {
+			raw, _ := io.ReadAll(r.Body)
+			bodies = append(bodies, string(raw))
+			if strings.Contains(string(raw), "maxItems") {
+				return geminiResponse(http.StatusBadRequest, `{"error":{"code":400,"status":"INVALID_ARGUMENT","message":"The specified schema produces a constraint that has too many states for serving."}}`), nil
+			}
+			return geminiResponse(http.StatusOK, `{"candidates":[{"content":{"parts":[{"functionCall":{"name":"apply","args":{"items":["a"]}}}]},"finishReason":"STOP"}]}`), nil
+		}),
+	}
+
+	response, err := client.Chat(context.Background(), "gemini-3.5-flash-lite", domain.ChatRequest{
+		Messages: []domain.ChatMessage{{Role: "user", Content: json.RawMessage(`"go"`)}},
+		Tools:    json.RawMessage(`[{"type":"function","function":{"name":"apply","parameters":{"type":"object","properties":{"items":{"type":"array","minItems":1,"maxItems":24,"items":{"type":"string"}}}}}}]`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(bodies) != 2 {
+		t.Fatalf("expected one retry, got %d requests", len(bodies))
+	}
+	if strings.Contains(bodies[1], "minItems") || strings.Contains(bodies[1], "maxItems") {
+		t.Fatalf("expected the retry to drop array bounds, got %s", bodies[1])
+	}
+	if response.FinishReason != "tool_calls" {
+		t.Fatalf("expected the retried call to succeed, got %#v", response)
+	}
+}
+
+func TestClassifyGeminiErrorTreatsTooComplexSchemaAsFallbackable(t *testing.T) {
+	err := classifyGeminiError(http.StatusBadRequest, []byte(`{"error":{"code":400,"status":"INVALID_ARGUMENT","message":"The specified schema produces a constraint that has too many states for serving."}}`))
+
+	if domain.Kind(err) != domain.ErrorKindModelUnavailable {
+		t.Fatalf("expected model unavailable error, got %q", domain.Kind(err))
+	}
+}
+
+type geminiRoundTrip func(*http.Request) (*http.Response, error)
+
+func (fn geminiRoundTrip) RoundTrip(r *http.Request) (*http.Response, error) {
+	return fn(r)
+}
+
+func geminiResponse(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
 }

@@ -285,10 +285,43 @@ func openAIMessages(messages []domain.ChatMessage) []message {
 			Content:    content,
 			ToolCallID: item.ToolCallID,
 			Name:       item.Name,
-			ToolCalls:  item.ToolCalls,
+			ToolCalls:  standardToolCalls(item.ToolCalls),
 		})
 	}
 	return result
+}
+
+type standardToolCall struct {
+	ID       string `json:"id,omitempty"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+// standardToolCalls drops fields another provider attached to a replayed
+// call, such as Gemini's thought_signature: Mistral rejects any extra field
+// with a 422, which stops the fallback chain instead of moving to the next
+// model.
+func standardToolCalls(raw json.RawMessage) json.RawMessage {
+	if !rawJSONHasValue(raw) {
+		return raw
+	}
+	var calls []standardToolCall
+	if err := json.Unmarshal(raw, &calls); err != nil {
+		return raw
+	}
+	for i := range calls {
+		if calls[i].Type == "" {
+			calls[i].Type = "function"
+		}
+	}
+	normalized, err := json.Marshal(calls)
+	if err != nil {
+		return raw
+	}
+	return normalized
 }
 
 func chatMessageHasValue(message domain.ChatMessage) bool {
