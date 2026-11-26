@@ -683,6 +683,16 @@ func sanitizeSchemaForGemini(value any) {
 			typed["enum"] = []any{constValue}
 		}
 	}
+	// Gemini has no oneOf, and dropping it erases every alternative: a
+	// discriminated union (what zod emits) would reach the model as an empty
+	// schema. Each branch already pins its discriminator, so anyOf accepts
+	// the same values.
+	if oneOf, ok := typed["oneOf"]; ok {
+		delete(typed, "oneOf")
+		if _, hasAnyOf := typed["anyOf"]; !hasAnyOf {
+			typed["anyOf"] = oneOf
+		}
+	}
 	for key := range typed {
 		if !geminiSchemaKeywords[key] {
 			delete(typed, key)

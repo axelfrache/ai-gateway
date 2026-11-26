@@ -56,6 +56,31 @@ func TestFunctionDeclarationsFromToolsConvertsConstToEnum(t *testing.T) {
 	}
 }
 
+func TestFunctionDeclarationsFromToolsKeepsOneOfAsAnyOf(t *testing.T) {
+	tools := json.RawMessage(`[{"type":"function","function":{"name":"apply","parameters":{
+		"type":"object",
+		"properties":{
+			"operations":{"type":"array","items":{"oneOf":[
+				{"type":"object","properties":{"op":{"type":"string","const":"add"},"name":{"type":"string"}},"required":["op","name"]},
+				{"type":"object","properties":{"op":{"type":"string","const":"remove"},"id":{"type":"string"}},"required":["op","id"]}
+			]}}
+		}
+	}}}]`)
+
+	declarations, err := functionDeclarationsFromTools(tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := `{"properties":{"operations":{"items":{"anyOf":[` +
+		`{"properties":{"name":{"type":"string"},"op":{"enum":["add"],"type":"string"}},"required":["op","name"],"type":"object"},` +
+		`{"properties":{"id":{"type":"string"},"op":{"enum":["remove"],"type":"string"}},"required":["op","id"],"type":"object"}` +
+		`]},"type":"array"}},"type":"object"}`
+	if string(declarations[0].Parameters) != want {
+		t.Fatalf("expected oneOf to survive as anyOf, got %s", declarations[0].Parameters)
+	}
+}
+
 func TestFunctionDeclarationsFromToolsStripsUnknownJSONSchemaKeywords(t *testing.T) {
 	tools := json.RawMessage(`[{"type":"function","function":{"name":"complex_tool","parameters":{
 		"type":"object",
